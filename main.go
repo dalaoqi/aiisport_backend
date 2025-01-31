@@ -108,5 +108,6 @@ func main() {
 	router.HandleFunc("/upload", uploadFileHandler).Methods("POST")
 	router.HandleFunc("/list", listFilesHandler).Methods("GET")
 
-	fmt.Printf("Server running at http://localhos:%s\n", Port)
+	fmt.Printf("Server running at http://0.0.0.0:%s\n", Port)
+	log.Fatal(http.ListenAndServe("0.0.0.0:"+Port, router))
 }
