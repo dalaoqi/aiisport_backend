@@ -18,6 +18,7 @@ var (
 	SupabaseBucket  string
 	SupabaseURL     string
 	SupabaseAPIKey  string
+	Port            string
 	StorageEndpoint = "/storage/v1/object"
 )
 
@@ -32,8 +33,9 @@ func init() {
 	SupabaseURL = os.Getenv("SUPABASE_URL")
 	SupabaseAPIKey = os.Getenv("SUPABASE_API_KEY")
 
+	Port = os.Getenv("PORT")
 	// 檢查必要環境變數是否存在
-	requiredEnv := []string{"SUPABASE_BUCKET", "SUPABASE_URL", "SUPABASE_API_KEY"}
+	requiredEnv := []string{"SUPABASE_BUCKET", "SUPABASE_URL", "SUPABASE_API_KEY", "PORT"}
 	for _, env := range requiredEnv {
 		if os.Getenv(env) == "" {
 			log.Fatalf("環境變數 %s 未設定", env)
@@ -106,7 +108,5 @@ func main() {
 	router.HandleFunc("/upload", uploadFileHandler).Methods("POST")
 	router.HandleFunc("/list", listFilesHandler).Methods("GET")
 
-	port := ":8080"
-	fmt.Printf("Server running at http://localhost%s\n", port)
-	log.Fatal(http.ListenAndServe(port, router))
+	fmt.Printf("Server running at http://localhost%s\n", Port)
 }
