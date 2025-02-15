@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -86,18 +87,18 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 上傳影片到 Supabase
-	uploadToSupabase(videoPath, fileName, handler.Header.Get("Content-Type"))
+	uploadToSupabase(SupabaseBucket, videoPath, fileName, handler.Header.Get("Content-Type"))
 
 	// 上傳縮圖到 Supabase
 	thumbnailName := strings.Replace(fileName, filepath.Ext(fileName), ".jpg", 1)
-	uploadToSupabase(thumbnailPath, thumbnailName, "image/jpeg")
+	uploadToSupabase("thumbnails", thumbnailPath, thumbnailName, "image/jpeg")
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(fmt.Sprintf("File and thumbnail uploaded successfully: %s", fileName)))
 }
 
 // 上傳檔案到 Supabase Storage
-func uploadToSupabase(filePath, fileName, contentType string) {
+func uploadToSupabase(bucket, filePath, fileName, contentType string) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		log.Printf("Error opening file: %v", err)
@@ -111,7 +112,7 @@ func uploadToSupabase(filePath, fileName, contentType string) {
 		return
 	}
 
-	uploadURL := fmt.Sprintf("%s%s/%s/%s", SupabaseURL, StorageEndpoint, SupabaseBucket, fileName)
+	uploadURL := fmt.Sprintf("%s%s/%s/%s", SupabaseURL, StorageEndpoint, bucket, fileName)
 
 	req, err := http.NewRequest("POST", uploadURL, buffer)
 	if err != nil {
@@ -137,23 +138,45 @@ func uploadToSupabase(filePath, fileName, contentType string) {
 	}
 }
 
-// 取得縮圖列表
+type thumbnailResponse struct {
+	Thumbnails []thumbnailData `json:"thumbnails"`
+}
+
+type thumbnailData struct {
+	ThumbnailURL string `json:"thumbnailURL"`
+	VideoURL     string `json:"videoURL"`
+}
+
 func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
 
-	// 只顯示 .jpg 的檔案（縮圖）
-	files := supabase.Storage.From(SupabaseBucket).List("", supa.FileSearchOptions{})
-
-	var thumbnails []string
+	// 取得所有檔案
+	files := supabase.Storage.From("thumbnails").List("", supa.FileSearchOptions{})
+	fmt.Printf("Files: %+v\n", files)
+	var thumbnails []thumbnailData
 	for _, file := range files {
+		// 若為縮圖 (以 .jpg 結尾)
 		if strings.HasSuffix(file.Name, ".jpg") {
-			thumbnails = append(thumbnails, fmt.Sprintf("%s/%s/%s/%s", SupabaseURL, StorageEndpoint, SupabaseBucket, file.Name))
+			// 獲取對應的影片 URL（假設影片名稱與縮圖名稱相同，但副檔名不同）
+			videoName := strings.Replace(file.Name, ".jpg", ".mp4", 1)
+			thumbnailURL := fmt.Sprintf("%s%s/%s/%s", SupabaseURL, StorageEndpoint, "thumbnails", file.Name)
+			videoURL := fmt.Sprintf("%s%s/%s/%s", SupabaseURL, StorageEndpoint, SupabaseBucket, videoName)
+
+			// 將縮圖與影片 URL 加入陣列
+			thumbnails = append(thumbnails, thumbnailData{
+				ThumbnailURL: thumbnailURL,
+				VideoURL:     videoURL,
+			})
 		}
 	}
 
+	// 回傳 JSON
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(fmt.Sprintf(`{"thumbnails": %v}`, thumbnails)))
+	response := thumbnailResponse{Thumbnails: thumbnails}
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, "Error encoding response", http.StatusInternalServerError)
+	}
 }
 
 func main() {
