@@ -266,7 +266,7 @@ func main() {
 	// 使用 gorilla/handlers 套件處理 CORS
 	corsHandler := handlers.CORS(
 		handlers.AllowedOrigins([]string{"*"}),
-		handlers.AllowedMethods([]string{"GET", "POST", "OPTIONS"}),
+		handlers.AllowedMethods([]string{"GET", "POST", "OPTIONS", "DELETE"}),
 		handlers.AllowedHeaders([]string{"Content-Type", "Authorization"}),
 	)(router)
 
