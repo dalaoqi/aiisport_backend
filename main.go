@@ -7,7 +7,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
@@ -32,8 +34,8 @@ func init() {
 	SupabaseBucket = os.Getenv("SUPABASE_BUCKET")
 	SupabaseURL = os.Getenv("SUPABASE_URL")
 	SupabaseAPIKey = os.Getenv("SUPABASE_API_KEY")
-
 	Port = os.Getenv("PORT")
+
 	// 檢查必要環境變數是否存在
 	requiredEnv := []string{"SUPABASE_BUCKET", "SUPABASE_URL", "SUPABASE_API_KEY", "PORT"}
 	for _, env := range requiredEnv {
@@ -43,8 +45,9 @@ func init() {
 	}
 }
 
+// 上傳影片並生成縮圖
 func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
-	err := r.ParseMultipartForm(10 << 20) // 10 MB 限制
+	err := r.ParseMultipartForm(50 << 20) // 限制上傳檔案大小 50 MB
 	if err != nil {
 		http.Error(w, "Error parsing form data", http.StatusBadRequest)
 		return
@@ -57,57 +60,107 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	buffer := bytes.NewBuffer(nil)
-	if _, err := buffer.ReadFrom(file); err != nil {
-		http.Error(w, "Error reading the file", http.StatusInternalServerError)
+	fileName := filepath.Base(handler.Filename)
+	videoPath := fmt.Sprintf("uploads/%s", fileName)
+
+	// 儲存影片至本地
+	os.MkdirAll("uploads", os.ModePerm)
+	outFile, err := os.Create(videoPath)
+	if err != nil {
+		http.Error(w, "Error saving the file", http.StatusInternalServerError)
+		return
+	}
+	defer outFile.Close()
+
+	if _, err := io.Copy(outFile, file); err != nil {
+		http.Error(w, "Error writing the file", http.StatusInternalServerError)
 		return
 	}
 
-	fileName := filepath.Base(handler.Filename)
+	// 使用 FFmpeg 生成縮圖
+	thumbnailPath := strings.Replace(videoPath, filepath.Ext(videoPath), ".jpg", 1)
+	cmd := exec.Command("ffmpeg", "-i", videoPath, "-ss", "00:00:02", "-vframes", "1", "-q:v", "2", thumbnailPath)
+	if err := cmd.Run(); err != nil {
+		http.Error(w, "Error generating thumbnail", http.StatusInternalServerError)
+		return
+	}
+
+	// 上傳影片到 Supabase
+	uploadToSupabase(videoPath, fileName, handler.Header.Get("Content-Type"))
+
+	// 上傳縮圖到 Supabase
+	thumbnailName := strings.Replace(fileName, filepath.Ext(fileName), ".jpg", 1)
+	uploadToSupabase(thumbnailPath, thumbnailName, "image/jpeg")
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(fmt.Sprintf("File and thumbnail uploaded successfully: %s", fileName)))
+}
+
+// 上傳檔案到 Supabase Storage
+func uploadToSupabase(filePath, fileName, contentType string) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		log.Printf("Error opening file: %v", err)
+		return
+	}
+	defer file.Close()
+
+	buffer := bytes.NewBuffer(nil)
+	if _, err := io.Copy(buffer, file); err != nil {
+		log.Printf("Error reading file: %v", err)
+		return
+	}
+
 	uploadURL := fmt.Sprintf("%s%s/%s/%s", SupabaseURL, StorageEndpoint, SupabaseBucket, fileName)
 
 	req, err := http.NewRequest("POST", uploadURL, buffer)
 	if err != nil {
-		http.Error(w, "Error creating request", http.StatusInternalServerError)
+		log.Printf("Error creating request: %v", err)
 		return
 	}
 
 	req.Header.Set("Authorization", "Bearer "+SupabaseAPIKey)
-	req.Header.Set("Content-Type", handler.Header.Get("Content-Type"))
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("x-upsert", "true") // 若檔名重複則覆蓋
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		http.Error(w, "Error uploading to Supabase", http.StatusInternalServerError)
+		log.Printf("Error uploading to Supabase: %v", err)
 		return
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		http.Error(w, string(body), http.StatusInternalServerError)
-		return
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("Error response from Supabase: %s", string(body))
 	}
-
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(fmt.Sprintf("File uploaded successfully: %s", fileName)))
 }
 
-func listFilesHandler(w http.ResponseWriter, r *http.Request) {
+// 取得縮圖列表
+func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
 
+	// 只顯示 .jpg 的檔案（縮圖）
 	files := supabase.Storage.From(SupabaseBucket).List("", supa.FileSearchOptions{})
 
+	var thumbnails []string
 	for _, file := range files {
-		fmt.Fprintf(w, "%s\n", file.Name)
+		if strings.HasSuffix(file.Name, ".jpg") {
+			thumbnails = append(thumbnails, fmt.Sprintf("%s/%s/%s/%s", SupabaseURL, StorageEndpoint, SupabaseBucket, file.Name))
+		}
 	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(fmt.Sprintf(`{"thumbnails": %v}`, thumbnails)))
 }
 
 func main() {
 	router := mux.NewRouter()
 	router.HandleFunc("/upload", uploadFileHandler).Methods("POST")
-	router.HandleFunc("/list", listFilesHandler).Methods("GET")
+	router.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET")
 
-	fmt.Printf("Server running at http://0.0.0.0:%s\n", Port)
-	log.Fatal(http.ListenAndServe("0.0.0.0:"+Port, router))
+	fmt.Printf("Server running at http://0.0.0.0%s\n", Port)
+	log.Fatal(http.ListenAndServe("0.0.0.0"+Port, router))
 }
