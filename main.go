@@ -253,7 +253,9 @@ func deleteFromSupabase(bucket, fileName string) error {
 
 	// 刪除檔案
 	resp := supabase.Storage.From(bucket).Remove([]string{fileName})
-	fmt.Printf("Delete response: %+v\n", resp)
+	if resp.Key != "" {
+		return fmt.Errorf("error deleting file: %s", resp.Message)
+	}
 	return nil
 }
 
