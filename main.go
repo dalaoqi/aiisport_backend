@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 	supa "github.com/nedpals/supabase-go"
@@ -184,6 +185,13 @@ func main() {
 	router.HandleFunc("/upload", uploadFileHandler).Methods("POST")
 	router.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET")
 
+	// 使用 gorilla/handlers 套件處理 CORS
+	corsHandler := handlers.CORS(
+		handlers.AllowedOrigins([]string{"*"}),
+		handlers.AllowedMethods([]string{"GET", "POST", "OPTIONS"}),
+		handlers.AllowedHeaders([]string{"Content-Type", "Authorization"}),
+	)(router)
+
 	fmt.Printf("Server running at http://0.0.0.0:%s\n", Port)
-	log.Fatal(http.ListenAndServe("0.0.0.0:"+Port, router))
+	log.Fatal(http.ListenAndServe("0.0.0.0:"+Port, corsHandler))
 }
