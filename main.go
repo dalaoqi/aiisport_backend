@@ -160,6 +160,7 @@ type thumbnailResponse struct {
 type thumbnailData struct {
 	ThumbnailURL string `json:"thumbnailURL"`
 	VideoURL     string `json:"videoURL"`
+	VideoName    string `json:"videoName"`
 }
 
 func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
@@ -196,6 +197,7 @@ func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 			thumbnails = append(thumbnails, thumbnailData{
 				ThumbnailURL: thumbnailURL,
 				VideoURL:     videoURL,
+				VideoName:    videoName,
 			})
 		}
 	}
