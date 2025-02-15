@@ -47,7 +47,7 @@ func init() {
 
 // 上傳影片並生成縮圖
 func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
-	err := r.ParseMultipartForm(50 << 20) // 限制上傳檔案大小 50 MB
+	err := r.ParseMultipartForm(100 << 20) // 限制上傳檔案大小 50 MB
 	if err != nil {
 		http.Error(w, "Error parsing form data", http.StatusBadRequest)
 		return
