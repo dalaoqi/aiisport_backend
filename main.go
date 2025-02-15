@@ -211,10 +211,56 @@ func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// 刪除影片和縮圖
+func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
+	// 加入 CORS 標頭
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+	// 處理預檢請求
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// 解析 URL 參數
+	vars := mux.Vars(r)
+	videoName := vars["videoName"]
+	// 刪除影片檔案
+	err := deleteFromSupabase(SupabaseVideosBucket, videoName)
+	if err != nil {
+		http.Error(w, "Error deleting video", http.StatusInternalServerError)
+		return
+	}
+
+	// 刪除縮圖檔案（假設縮圖與影片檔案有相同名稱，但副檔名為 .jpg）
+	thumbnailName := strings.Replace(videoName, ".mov", ".jpg", 1)
+	err = deleteFromSupabase(SupabaseThumbnailsBucket, thumbnailName)
+	if err != nil {
+		http.Error(w, "Error deleting thumbnail", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(fmt.Sprintf("Video and thumbnail deleted successfully: %s", videoName)))
+}
+
+// 從 Supabase Storage 刪除檔案
+func deleteFromSupabase(bucket, fileName string) error {
+	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
+
+	// 刪除檔案
+	resp := supabase.Storage.From(bucket).Remove([]string{fileName})
+	fmt.Printf("Delete response: %+v\n", resp)
+	return nil
+}
+
 func main() {
 	router := mux.NewRouter()
 	router.HandleFunc("/upload", uploadFileHandler).Methods("POST")
 	router.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET")
+	router.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE")
 
 	// 使用 gorilla/handlers 套件處理 CORS
 	corsHandler := handlers.CORS(
