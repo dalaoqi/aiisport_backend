@@ -19,11 +19,15 @@ import (
 )
 
 var (
-	SupabaseBucket  string
 	SupabaseURL     string
 	SupabaseAPIKey  string
 	Port            string
 	StorageEndpoint = "/storage/v1/object"
+)
+
+const (
+	SupabaseVideosBucket     = "videos"
+	SupabaseThumbnailsBucket = "thumbnails"
 )
 
 func init() {
@@ -33,7 +37,6 @@ func init() {
 	}
 
 	// 從環境變數中讀取必要設定
-	SupabaseBucket = os.Getenv("SUPABASE_BUCKET")
 	SupabaseURL = os.Getenv("SUPABASE_URL")
 	SupabaseAPIKey = os.Getenv("SUPABASE_API_KEY")
 	Port = os.Getenv("PORT")
@@ -99,11 +102,11 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 上傳影片到 Supabase
-	uploadToSupabase(SupabaseBucket, videoPath, fileName, handler.Header.Get("Content-Type"))
+	uploadToSupabase(SupabaseVideosBucket, videoPath, fileName, handler.Header.Get("Content-Type"))
 
 	// 上傳縮圖到 Supabase
 	thumbnailName := strings.Replace(fileName, filepath.Ext(fileName), ".jpg", 1)
-	uploadToSupabase("thumbnails", thumbnailPath, thumbnailName, "image/jpeg")
+	uploadToSupabase(SupabaseThumbnailsBucket, thumbnailPath, thumbnailName, "image/jpeg")
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(fmt.Sprintf("File and thumbnail uploaded successfully: %s", fileName)))
@@ -181,9 +184,13 @@ func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 		// 若為縮圖 (以 .jpg 結尾)
 		if strings.HasSuffix(file.Name, ".jpg") {
 			// 獲取對應的影片 URL（假設影片名稱與縮圖名稱相同，但副檔名不同）
-			videoName := strings.Replace(file.Name, ".jpg", ".mp4", 1)
-			thumbnailURL := fmt.Sprintf("%s%s/%s/%s", SupabaseURL, StorageEndpoint, "thumbnails", file.Name)
-			videoURL := fmt.Sprintf("%s%s/%s/%s", SupabaseURL, StorageEndpoint, SupabaseBucket, videoName)
+			videoName := strings.Replace(file.Name, ".jpg", ".mov", 1)
+			videoSignedUrlResp := supabase.Storage.From(SupabaseVideosBucket).CreateSignedUrl(videoName, 86400)
+			videoURL := videoSignedUrlResp.SignedUrl
+
+			// 獲取縮圖 URL
+			thumbnailSignedUrlResp := supabase.Storage.From(SupabaseThumbnailsBucket).CreateSignedUrl(file.Name, 86400)
+			thumbnailURL := thumbnailSignedUrlResp.SignedUrl
 
 			// 將縮圖與影片 URL 加入陣列
 			thumbnails = append(thumbnails, thumbnailData{
