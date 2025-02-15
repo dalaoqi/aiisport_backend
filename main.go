@@ -181,6 +181,7 @@ func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 	files := supabase.Storage.From("thumbnails").List("", supa.FileSearchOptions{})
 
 	var thumbnails []thumbnailData
+	thumbnails = make([]thumbnailData, 0)
 	for _, file := range files {
 		// 若為縮圖 (以 .jpg 結尾)
 		if strings.HasSuffix(file.Name, ".jpg") {
