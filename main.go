@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
@@ -76,8 +78,10 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	fileName := filepath.Base(handler.Filename)
-	videoPath := fmt.Sprintf("uploads/%s", fileName)
+	// 取得原始檔名並生成 Hash
+	originalFileName := filepath.Base(handler.Filename)
+	hashedFileName := generateHashedFileName(originalFileName)
+	videoPath := fmt.Sprintf("uploads/%s", hashedFileName)
 
 	// 儲存影片至本地
 	os.MkdirAll("uploads", os.ModePerm)
@@ -102,14 +106,24 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 上傳影片到 Supabase
-	uploadToSupabase(SupabaseVideosBucket, videoPath, fileName, handler.Header.Get("Content-Type"))
+	uploadToSupabase(SupabaseVideosBucket, videoPath, hashedFileName, handler.Header.Get("Content-Type"))
 
 	// 上傳縮圖到 Supabase
-	thumbnailName := strings.Replace(fileName, filepath.Ext(fileName), ".jpg", 1)
+	thumbnailName := strings.Replace(hashedFileName, filepath.Ext(hashedFileName), ".jpg", 1)
 	uploadToSupabase(SupabaseThumbnailsBucket, thumbnailPath, thumbnailName, "image/jpeg")
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(fmt.Sprintf("File and thumbnail uploaded successfully: %s", fileName)))
+	w.Write([]byte(fmt.Sprintf("File and thumbnail uploaded successfully: %s", hashedFileName)))
+}
+
+// 根據檔名和當前時間生成 Hash
+func generateHashedFileName(fileName string) string {
+	currentTime := fmt.Sprintf("%d", time.Now().UnixNano())
+	hashInput := fileName + currentTime
+	hash := sha256.New()
+	hash.Write([]byte(hashInput))
+	hashedFileName := fmt.Sprintf("%x%s", hash.Sum(nil), filepath.Ext(fileName))
+	return hashedFileName
 }
 
 // 上傳檔案到 Supabase Storage
