@@ -112,6 +112,28 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 	thumbnailName := strings.Replace(hashedFileName, filepath.Ext(hashedFileName), ".jpg", 1)
 	uploadToSupabase(SupabaseThumbnailsBucket, thumbnailPath, thumbnailName, "image/jpeg")
 
+	// 構建 Supabase 中的 video_path 和 thumbnail_path
+	videoURL := fmt.Sprintf("%s/%s/%s", SupabaseURL, SupabaseVideosBucket, hashedFileName)
+	thumbnailURL := fmt.Sprintf("%s/%s/%s", SupabaseURL, SupabaseThumbnailsBucket, thumbnailName)
+
+	// 存 Name, video_path 和 thumbnail_path 到 Supabase 的 video 資料表
+	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
+
+	// 準備要寫入的資料
+	videoRecord := map[string]interface{}{
+		"name":           originalFileName,
+		"video_path":     videoURL,
+		"thumbnail_path": thumbnailURL,
+	}
+
+	// 將記錄寫入資料庫
+	var result []map[string]interface{}
+	err = supabase.DB.From("video").Insert(videoRecord).Execute(&result)
+	if err != nil {
+		http.Error(w, "Error inserting record to database", http.StatusInternalServerError)
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(fmt.Sprintf("File and thumbnail uploaded successfully: %s", hashedFileName)))
 }
