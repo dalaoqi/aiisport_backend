@@ -123,7 +123,7 @@ func generateHashedFileName(fileName string) string {
 	hash := sha256.New()
 	hash.Write([]byte(hashInput))
 	hashedFileName := fmt.Sprintf("%x%s", hash.Sum(nil), filepath.Ext(fileName))
-	return hashedFileName
+	return strings.ToLower(hashedFileName)
 }
 
 // 上傳檔案到 Supabase Storage
