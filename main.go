@@ -295,12 +295,33 @@ func deleteFromSupabase(bucket, fileName string) error {
 	return nil
 }
 
+func logoHandler(w http.ResponseWriter, r *http.Request) {
+	// 設定檔案路徑
+	logoPath := "assets/logo.png"
+
+	// 開啟檔案
+	file, err := os.Open(logoPath)
+	if err != nil {
+		http.Error(w, "Logo not found", http.StatusNotFound)
+		return
+	}
+	defer file.Close()
+
+	// 設定 Content-Type 為圖片格式
+	w.Header().Set("Content-Type", "image/png")
+
+	// 將檔案內容寫入回應
+	if _, err := io.Copy(w, file); err != nil {
+		http.Error(w, "Error serving logo", http.StatusInternalServerError)
+	}
+}
+
 func main() {
 	router := mux.NewRouter()
 	router.HandleFunc("/upload", uploadFileHandler).Methods("POST")
 	router.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET")
 	router.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE")
-
+	router.HandleFunc("/asset/logo", logoHandler).Methods("GET")
 	// 使用 gorilla/handlers 套件處理 CORS
 	corsHandler := handlers.CORS(
 		handlers.AllowedOrigins([]string{"*"}),
