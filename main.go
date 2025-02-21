@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +21,8 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 	supa "github.com/nedpals/supabase-go"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
 var (
@@ -25,6 +30,7 @@ var (
 	SupabaseAPIKey  string
 	Port            string
 	StorageEndpoint = "/storage/v1/object"
+	oauthConfig     *oauth2.Config
 )
 
 const (
@@ -49,6 +55,14 @@ func init() {
 		if os.Getenv(env) == "" {
 			log.Fatalf("環境變數 %s 未設定", env)
 		}
+	}
+
+	oauthConfig = &oauth2.Config{
+		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
+		Scopes:       []string{"https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"},
+		Endpoint:     google.Endpoint,
 	}
 }
 
@@ -316,12 +330,62 @@ func logoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func generateStateOauthCookie(w http.ResponseWriter) string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	state := base64.URLEncoding.EncodeToString(b)
+
+	return state
+}
+
+// 處理登入請求，導向 Google OAuth 認證
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	oauthState := generateStateOauthCookie(w)
+	url := oauthConfig.AuthCodeURL(oauthState, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
+	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+}
+
+// 處理 Google OAuth 回調
+func callbackHandler(w http.ResponseWriter, r *http.Request) {
+	// 取得授權碼
+	code := r.URL.Query().Get("code")
+	token, err := oauthConfig.Exchange(context.Background(), code)
+	if err != nil {
+		http.Error(w, "Failed to get access token", http.StatusInternalServerError)
+		return
+	}
+
+	// 取得使用者資訊
+	client := oauthConfig.Client(context.Background(), token)
+	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
+	if err != nil {
+		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	// 解析使用者資訊
+	var userInfo map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
+		http.Error(w, "Failed to parse user info", http.StatusInternalServerError)
+		return
+	}
+
+	// 顯示使用者資訊
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(userInfo)
+}
+
 func main() {
 	router := mux.NewRouter()
 	router.HandleFunc("/upload", uploadFileHandler).Methods("POST")
 	router.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET")
 	router.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE")
 	router.HandleFunc("/asset/logo", logoHandler).Methods("GET")
+
+	router.HandleFunc("/auth/login", loginHandler).Methods("GET")
+	router.HandleFunc("/auth/callback", callbackHandler).Methods("GET")
+
 	// 使用 gorilla/handlers 套件處理 CORS
 	corsHandler := handlers.CORS(
 		handlers.AllowedOrigins([]string{"*"}),
