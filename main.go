@@ -43,8 +43,10 @@ const (
 
 // Claims 結構，用來儲存 JWT 內的 Payload
 type Claims struct {
-	Email  string `json:"email"`
-	UserID string `json:"user_id"`
+	Email    string `json:"email"`
+	UserID   string `json:"user_id"`
+	UserName string `json:"name"`
+	Image    string `json:"image"`
 	jwt.RegisteredClaims
 }
 
@@ -378,7 +380,9 @@ func jwtMiddleware(next http.Handler) http.Handler {
 
 		// 將用戶資訊存入 Context，讓後續處理可使用
 		ctx := context.WithValue(r.Context(), "userID", claims.UserID)
-		ctx = context.WithValue(r.Context(), "userEmail", claims.Email)
+		ctx = context.WithValue(ctx, "userEmail", claims.Email)
+		ctx = context.WithValue(ctx, "userName", claims.UserName)
+		ctx = context.WithValue(ctx, "userImage", claims.Image)
 		log.Printf("User %s authenticated", claims.Email)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -418,12 +422,8 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("User info: %v", userInfo)
 
-	// 取得 Email 或 ID
-	userEmail := userInfo["email"].(string)
-	userID := userInfo["id"].(string)
-
 	// 這裡可以選擇用 JWT 來建立登入 token
-	jwtToken, err := generateJWT(userEmail, userID)
+	jwtToken, err := generateJWT(userInfo)
 	if err != nil {
 		http.Error(w, "Failed to generate JWT", http.StatusInternalServerError)
 		return
@@ -446,14 +446,16 @@ func loggingMiddleware(next http.Handler) http.Handler {
 }
 
 // generateJWT 產生 JWT Token
-func generateJWT(email string, userID string) (string, error) {
+func generateJWT(userInfo map[string]interface{}) (string, error) {
 	// 設定 Token 過期時間
 	expirationTime := time.Now().Add(24 * time.Hour)
 
 	// 建立 claims
 	claims := jwt.MapClaims{
-		"email":   email,
-		"user_id": userID,
+		"email":   userInfo["email"].(string),
+		"user_id": userInfo["id"].(string),
+		"image":   userInfo["picture"].(string),
+		"name":    userInfo["name"].(string),
 		"exp":     expirationTime.Unix(), // 過期時間
 		"iat":     time.Now().Unix(),     // 發行時間
 	}
@@ -470,6 +472,17 @@ func generateJWT(email string, userID string) (string, error) {
 	return signedToken, nil
 }
 
+func getCurrentUserHandler(w http.ResponseWriter, r *http.Request) {
+	response := map[string]string{
+		"userID":    r.Context().Value("userID").(string),
+		"userEmail": r.Context().Value("userEmail").(string),
+		"userName":  r.Context().Value("userName").(string),
+		"userImage": r.Context().Value("userImage").(string),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 func main() {
 	router := mux.NewRouter()
 	router.Use(loggingMiddleware)
@@ -477,7 +490,7 @@ func main() {
 	// 需要 JWT 驗證的路由
 	protectedRoutes := router.PathPrefix("/").Subrouter()
 	protectedRoutes.Use(jwtMiddleware)
-
+	protectedRoutes.HandleFunc("/api/user", getCurrentUserHandler).Methods("GET")
 	protectedRoutes.HandleFunc("/upload", uploadFileHandler).Methods("POST")
 	protectedRoutes.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET")
 	protectedRoutes.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE")
