@@ -397,7 +397,7 @@ func main() {
 	router.HandleFunc("/asset/logo", logoHandler).Methods("GET")
 
 	router.HandleFunc("/auth/google/login", loginHandler).Methods("GET")
-	router.HandleFunc("/auth/callback", callbackHandler).Methods("GET")
+	router.HandleFunc("/auth/goolge/callback", callbackHandler).Methods("GET")
 
 	// 使用 gorilla/handlers 套件處理 CORS
 	corsHandler := handlers.CORS(
