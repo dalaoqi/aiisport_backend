@@ -373,6 +373,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 顯示使用者資訊
 	w.Header().Set("Content-Type", "application/json")
+	log.Printf("User info: %v", userInfo)
 	json.NewEncoder(w).Encode(userInfo)
 }
 
