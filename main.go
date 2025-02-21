@@ -415,6 +415,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to parse user info", http.StatusInternalServerError)
 		return
 	}
+	log.Printf("User info: %v", userInfo)
 	// 取得 Email 或 ID
 	userEmail := userInfo["email"].(string)
 	userID := userInfo["id"].(string)
