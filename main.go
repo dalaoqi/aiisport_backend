@@ -74,6 +74,7 @@ func init() {
 		Scopes:       []string{"https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"},
 		Endpoint:     google.Endpoint,
 	}
+	log.Printf("OAuth Config: %v", oauthConfig.RedirectURL)
 }
 
 // 上傳影片並生成縮圖
@@ -399,7 +400,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to get access token", http.StatusInternalServerError)
 		return
 	}
-
+	log.Printf("Token: %v", token)
 	// 取得使用者資訊
 	client := oauthConfig.Client(context.Background(), token)
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
@@ -416,6 +417,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("User info: %v", userInfo)
+
 	// 取得 Email 或 ID
 	userEmail := userInfo["email"].(string)
 	userID := userInfo["id"].(string)
