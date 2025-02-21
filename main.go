@@ -41,6 +41,13 @@ const (
 	SupabaseThumbnailsBucket = "thumbnails"
 )
 
+// Claims 結構，用來儲存 JWT 內的 Payload
+type Claims struct {
+	Email  string `json:"email"`
+	UserID string `json:"user_id"`
+	jwt.RegisteredClaims
+}
+
 func init() {
 	// 讀取 .env 檔案
 	if err := godotenv.Load(); err != nil {
@@ -341,6 +348,41 @@ func generateStateOauthCookie(w http.ResponseWriter) string {
 	return state
 }
 
+// JWT 驗證 Middleware
+func jwtMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "未提供授權 Token", http.StatusUnauthorized)
+			return
+		}
+
+		// Token 格式: "Bearer <token>"
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		if tokenString == authHeader {
+			http.Error(w, "無效的 Token 格式", http.StatusUnauthorized)
+			return
+		}
+
+		// 解析 Token
+		claims := &Claims{}
+		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+			return []byte(jwtSecret), nil
+		})
+
+		if err != nil || !token.Valid {
+			http.Error(w, "無效的 Token", http.StatusUnauthorized)
+			return
+		}
+
+		// 將用戶資訊存入 Context，讓後續處理可使用
+		ctx := context.WithValue(r.Context(), "userID", claims.UserID)
+		ctx = context.WithValue(r.Context(), "userEmail", claims.Email)
+		log.Printf("User %s authenticated", claims.Email)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // 處理登入請求，導向 Google OAuth 認證
 func loginHandler(w http.ResponseWriter, r *http.Request) {
 	oauthState := generateStateOauthCookie(w)
@@ -429,11 +471,15 @@ func main() {
 	router := mux.NewRouter()
 	router.Use(loggingMiddleware)
 
-	router.HandleFunc("/upload", uploadFileHandler).Methods("POST")
-	router.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET")
-	router.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE")
-	router.HandleFunc("/asset/logo", logoHandler).Methods("GET")
+	// 需要 JWT 驗證的路由
+	protectedRoutes := router.PathPrefix("/").Subrouter()
+	protectedRoutes.Use(jwtMiddleware)
 
+	protectedRoutes.HandleFunc("/upload", uploadFileHandler).Methods("POST")
+	protectedRoutes.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET")
+	protectedRoutes.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE")
+
+	router.HandleFunc("/asset/logo", logoHandler).Methods("GET")
 	router.HandleFunc("/auth/google/login", loginHandler).Methods("GET")
 	router.HandleFunc("/auth/google/callback", callbackHandler).Methods("GET")
 
