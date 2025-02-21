@@ -384,19 +384,9 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 設定 Cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "authToken",
-		Value:    jwtToken,
-		Path:     "/",
-		HttpOnly: true, // 防止 JavaScript 存取，提高安全性
-		Secure:   true, // 確保只有 HTTPS 才能傳送
-		SameSite: http.SameSiteStrictMode,
-		Expires:  time.Now().Add(24 * time.Hour),
-	})
-
-	// 重導向回前端首頁
-	http.Redirect(w, r, "https://sportaii.com/", http.StatusSeeOther)
+	// 重導向回前端首頁，並帶上 token
+	redirectURL := fmt.Sprintf("https://sportaii.com?token=%s", jwtToken)
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
