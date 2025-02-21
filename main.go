@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
@@ -31,6 +32,8 @@ var (
 	Port            string
 	StorageEndpoint = "/storage/v1/object"
 	oauthConfig     *oauth2.Config
+
+	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
 )
 
 const (
@@ -370,11 +373,30 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to parse user info", http.StatusInternalServerError)
 		return
 	}
+	// 取得 Email 或 ID
+	userEmail := userInfo["email"].(string)
+	userID := userInfo["id"].(string)
 
-	// 顯示使用者資訊
-	w.Header().Set("Content-Type", "application/json")
-	log.Printf("User info: %v", userInfo)
-	json.NewEncoder(w).Encode(userInfo)
+	// 這裡可以選擇用 JWT 來建立登入 token
+	jwtToken, err := generateJWT(userEmail, userID)
+	if err != nil {
+		http.Error(w, "Failed to generate JWT", http.StatusInternalServerError)
+		return
+	}
+
+	// 設定 Cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "authToken",
+		Value:    jwtToken,
+		Path:     "/",
+		HttpOnly: true, // 防止 JavaScript 存取，提高安全性
+		Secure:   true, // 確保只有 HTTPS 才能傳送
+		SameSite: http.SameSiteStrictMode,
+		Expires:  time.Now().Add(24 * time.Hour),
+	})
+
+	// 重導向回前端首頁
+	http.Redirect(w, r, "https://sportaii.com/", http.StatusSeeOther)
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
@@ -386,6 +408,31 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		log.Printf("[%s] %s %s from %s", time.Now().Format("2006-01-02 15:04:05"), r.Method, r.URL.Path, ip)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// generateJWT 產生 JWT Token
+func generateJWT(email string, userID string) (string, error) {
+	// 設定 Token 過期時間
+	expirationTime := time.Now().Add(24 * time.Hour)
+
+	// 建立 claims
+	claims := jwt.MapClaims{
+		"email":   email,
+		"user_id": userID,
+		"exp":     expirationTime.Unix(), // 過期時間
+		"iat":     time.Now().Unix(),     // 發行時間
+	}
+
+	// 產生 Token
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	// 簽名 Token
+	signedToken, err := token.SignedString(jwtSecret)
+	if err != nil {
+		return "", err
+	}
+
+	return signedToken, nil
 }
 
 func main() {
