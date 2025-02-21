@@ -376,8 +376,21 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(userInfo)
 }
 
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := r.RemoteAddr
+		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+			ip = forwarded
+		}
+		log.Printf("[%s] %s %s from %s", time.Now().Format("2006-01-02 15:04:05"), r.Method, r.URL.Path, ip)
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	router := mux.NewRouter()
+	router.Use(loggingMiddleware)
+
 	router.HandleFunc("/upload", uploadFileHandler).Methods("POST")
 	router.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET")
 	router.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE")
