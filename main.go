@@ -239,22 +239,22 @@ func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, video := range videos {
-		thumbnailSignedUrlResp, err := supabase.Storage.CreateSignedUploadUrl(SupabaseThumbnailsBucket, video.Thumbnail_path)
+		thumbnailSignedUrlResp, err := supabase.Storage.CreateSignedUrl(SupabaseThumbnailsBucket, video.Thumbnail_path, 86400)
 		if err != nil {
 			log.Fatalf("Failed to get thumbnail signed URL: %+v", err)
 			http.Error(w, "Error getting thumbnail signed URL", http.StatusInternalServerError)
 			return
 		}
 
-		videoSignedUrlResp, err := supabase.Storage.CreateSignedUploadUrl(SupabaseVideosBucket, video.Video_path)
+		videoSignedUrlResp, err := supabase.Storage.CreateSignedUrl(SupabaseVideosBucket, video.Video_path, 86400)
 		if err != nil {
 			log.Fatalf("Failed to get video signed URL: %+v", err)
 			http.Error(w, "Error getting video signed URL", http.StatusInternalServerError)
 			return
 		}
 		thumbnails = append(thumbnails, thumbnailData{
-			ThumbnailURL: thumbnailSignedUrlResp.Url,
-			VideoURL:     videoSignedUrlResp.Url,
+			ThumbnailURL: thumbnailSignedUrlResp.SignedURL,
+			VideoURL:     videoSignedUrlResp.SignedURL,
 			VideoName:    video.Name,
 			VideoID:      video.ID,
 		})
