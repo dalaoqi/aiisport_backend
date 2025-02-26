@@ -501,18 +501,20 @@ func main() {
 
 	// 使用 gorilla/handlers 套件處理 CORS
 	corsHandler := handlers.CORS(
-		handlers.AllowedOrigins([]string{"https://sportaii.com", "http://localhost:3000"}),
-		handlers.AllowedMethods([]string{"GET", "POST", "OPTIONS", "DELETE"}),
+		handlers.AllowedOrigins([]string{"https://sportaii.com"}), // Remove * and specify exact origin
+		handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}),
 		handlers.AllowedHeaders([]string{
 			"Content-Type",
 			"Authorization",
-			"Cache-Control",
-			"Accept",
 			"X-Requested-With",
+			"Accept",
+			"Origin",
 		}),
-		handlers.ExposedHeaders([]string{"Content-Length", "Content-Range"}),
+		handlers.ExposedHeaders([]string{
+			"Content-Length",
+			"Content-Range",
+		}),
 		handlers.AllowCredentials(),
-		handlers.MaxAge(86400), // Add this: 24 hours in seconds
 	)(router)
 
 	fmt.Printf("Server running at http://0.0.0.0:%s\n", Port)
