@@ -80,17 +80,6 @@ func init() {
 
 // 上傳影片並生成縮圖
 func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
-	// 加入 CORS 標頭
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-	// 處理預檢請求
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
 	err := r.ParseMultipartForm(100 << 20) // 限制上傳檔案大小 50 MB
 	if err != nil {
 		http.Error(w, "Error parsing form data", http.StatusBadRequest)
@@ -226,17 +215,6 @@ type thumbnailData struct {
 }
 
 func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
-	// 加入 CORS 標頭
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-	// 處理預檢請求
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
 	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
 
 	// 取得所有檔案
@@ -276,17 +254,6 @@ func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 
 // 刪除影片和縮圖
 func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
-	// 加入 CORS 標頭
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-	// 處理預檢請求
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
 	// 解析 URL 參數
 	vars := mux.Vars(r)
 	videoName := vars["videoName"]
@@ -488,8 +455,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		origin := r.Header.Get("Origin")
 
 		allowedOrigins := map[string]bool{
-			"https://sportaii.com":  true,
-			"https://sportaii.com/": true,
+			"https://sportaii.com": true,
 		}
 
 		if allowedOrigins[origin] {
