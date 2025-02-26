@@ -704,9 +704,9 @@ func main() {
 
 	// Remove separate OPTIONS handlers from route definitions
 	protectedRoutes.HandleFunc("/api/user", getCurrentUserHandler).Methods("GET", "OPTIONS")
-	protectedRoutes.HandleFunc("/upload", uploadFileHandler).Methods("POST")
+	protectedRoutes.HandleFunc("/upload", uploadFileHandler).Methods("POST", "OPTIONS")
 	protectedRoutes.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET", "OPTIONS")
-	protectedRoutes.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE")
+	protectedRoutes.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE", "OPTIONS")
 
 	router.HandleFunc("/asset/logo", logoHandler).Methods("GET")
 	router.HandleFunc("/auth/google/login", loginHandler).Methods("GET")
