@@ -217,35 +217,47 @@ type thumbnailData struct {
 	ThumbnailURL string `json:"thumbnailURL"`
 	VideoURL     string `json:"videoURL"`
 	VideoName    string `json:"videoName"`
+	videoID      int32  `json:"videoID"`
 }
 
 func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
-	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
-
-	// 取得所有檔案
-	files := supabase.Storage.From("thumbnails").List("", supa.FileSearchOptions{})
+	videos, err := getVideoByUser(r.Context().Value("userID").(int32))
+	if err != nil {
+		log.Fatalf("Failed to get videos: %+v", err)
+		http.Error(w, "Error getting records from database", http.StatusInternalServerError)
+		return
+	}
 
 	var thumbnails []thumbnailData
 	thumbnails = make([]thumbnailData, 0)
-	for _, file := range files {
-		// 若為縮圖 (以 .jpg 結尾)
-		if strings.HasSuffix(file.Name, ".jpg") {
-			// 獲取對應的影片 URL（假設影片名稱與縮圖名稱相同，但副檔名不同）
-			videoName := strings.Replace(file.Name, ".jpg", ".mov", 1)
-			videoSignedUrlResp := supabase.Storage.From(SupabaseVideosBucket).CreateSignedUrl(videoName, 86400)
-			videoURL := videoSignedUrlResp.SignedUrl
 
-			// 獲取縮圖 URL
-			thumbnailSignedUrlResp := supabase.Storage.From(SupabaseThumbnailsBucket).CreateSignedUrl(file.Name, 86400)
-			thumbnailURL := thumbnailSignedUrlResp.SignedUrl
+	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
+	if err != nil {
+		log.Fatalf("cannot initalize client: %v", err)
+		http.Error(w, "Error initializing client", http.StatusInternalServerError)
+		return
+	}
 
-			// 將縮圖與影片 URL 加入陣列
-			thumbnails = append(thumbnails, thumbnailData{
-				ThumbnailURL: thumbnailURL,
-				VideoURL:     videoURL,
-				VideoName:    videoName,
-			})
+	for _, video := range videos {
+		thumbnailSignedUrlResp, err := supabase.Storage.CreateSignedUploadUrl(SupabaseThumbnailsBucket, video.Thumbnail_path)
+		if err != nil {
+			log.Fatalf("Failed to get thumbnail signed URL: %+v", err)
+			http.Error(w, "Error getting thumbnail signed URL", http.StatusInternalServerError)
+			return
 		}
+
+		videoSignedUrlResp, err := supabase.Storage.CreateSignedUploadUrl(SupabaseVideosBucket, video.Video_path)
+		if err != nil {
+			log.Fatalf("Failed to get video signed URL: %+v", err)
+			http.Error(w, "Error getting video signed URL", http.StatusInternalServerError)
+			return
+		}
+		thumbnails = append(thumbnails, thumbnailData{
+			ThumbnailURL: thumbnailSignedUrlResp.Url,
+			VideoURL:     videoSignedUrlResp.Url,
+			VideoName:    video.Name,
+			videoID:      video.ID,
+		})
 	}
 
 	// 回傳 JSON
@@ -257,32 +269,90 @@ func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func getVideoByUser(userID int32) ([]Video, error) {
+	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
+	if err != nil {
+		log.Fatalf("cannot initalize client: %v", err)
+		return nil, err
+	}
+
+	videos := []Video{}
+	userVideos := []UserVideo{}
+	// Get all videos by User, using the User ID
+	_, err = supabase.
+		From("user_videos").
+		Select("*", "exact", false).
+		Filter("user_id", "eq", strconv.Itoa(int(userID))).
+		ExecuteTo(&userVideos)
+	if err != nil {
+		log.Fatalf("error getting user videos: %v", err)
+		return nil, err
+	}
+	for _, userVideo := range userVideos {
+		video := Video{}
+		_, err = supabase.
+			From("videos").
+			Select("*", "exact", false).
+			Eq("id", strconv.Itoa(int(userVideo.VideoId))).
+			Single().
+			ExecuteTo(&video)
+		if err != nil {
+			log.Fatalf("error getting video by id: %v", err)
+			return nil, err
+		}
+		videos = append(videos, video)
+	}
+	return videos, nil
+}
+
+func videoGetByID(videoID string) (*Video, error) {
+	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
+	if err != nil {
+		log.Fatalf("cannot initalize client: %v", err)
+		return nil, err
+	}
+
+	video := Video{}
+	_, err = supabase.
+		From("videos").
+		Select("*", "exact", false).
+		Eq("id", videoID).
+		Single().
+		ExecuteTo(&video)
+
+	if err != nil {
+		return nil, err
+	}
+	return &video, nil
+}
+
 // 刪除影片和縮圖
 func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 	// 解析 URL 參數
 	vars := mux.Vars(r)
-	videoName := vars["videoName"]
+	videoID := vars["videoID"]
+	video, err := videoGetByID(videoID)
+	if err != nil {
+		log.Fatalf("Failed to get video: %+v", err)
+		http.Error(w, "Error getting record from database", http.StatusInternalServerError)
+		return
+	}
 	// 刪除影片檔案
-	err := deleteFromSupabase(SupabaseVideosBucket, videoName)
+	err = deleteFromSupabase(SupabaseVideosBucket, strings.TrimPrefix(video.Video_path, fmt.Sprintf("%s/videos/", SupabaseURL)))
 	if err != nil {
 		http.Error(w, "Error deleting video", http.StatusInternalServerError)
 		return
 	}
 
 	// 刪除縮圖檔案（假設縮圖與影片檔案有相同名稱，但副檔名為 .jpg）
-	thumbnailName := strings.Replace(videoName, ".mov", ".jpg", 1)
-	err = deleteFromSupabase(SupabaseThumbnailsBucket, thumbnailName)
+
+	err = deleteFromSupabase(SupabaseThumbnailsBucket, strings.TrimPrefix(video.Video_path, fmt.Sprintf("%s/thumbnails/", SupabaseURL)))
 	if err != nil {
 		http.Error(w, "Error deleting thumbnail", http.StatusInternalServerError)
 		return
 	}
-	video, err := videoGet(videoName, thumbnailName)
-	if err != nil {
-		log.Fatalf("Failed to get video: %+v", err)
-		http.Error(w, "Error getting record from database", http.StatusInternalServerError)
-		return
-	}
-	err = videoDelete(videoName)
+
+	err = videoDelete(video.Name)
 	if err != nil {
 		log.Fatalf("Failed to delete video: %+v", err)
 		http.Error(w, "Error deleting record from database", http.StatusInternalServerError)
@@ -295,7 +365,7 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(fmt.Sprintf("Video and thumbnail deleted successfully: %s", videoName)))
+	w.Write([]byte(fmt.Sprintf("Video and thumbnail deleted successfully: %s", video.Name)))
 }
 
 // 從 Supabase Storage 刪除檔案
@@ -558,7 +628,7 @@ func videoDelete(videoName string) error {
 type UserVideo struct {
 	ID      int32 `json:"id"`
 	UserID  int32 `json:"user_id"`
-	Videoid int32 `json:"video_id"`
+	VideoId int32 `json:"video_id"`
 }
 
 func userVideoInsert(userID, videoID int32) error {
@@ -566,7 +636,7 @@ func userVideoInsert(userID, videoID int32) error {
 
 	newUserVideo := UserVideo{
 		UserID:  userID,
-		Videoid: videoID,
+		VideoId: videoID,
 	}
 
 	var insertedUserVideos []UserVideo
@@ -710,7 +780,7 @@ func main() {
 	protectedRoutes.HandleFunc("/api/user", getCurrentUserHandler).Methods("GET", "OPTIONS")
 	protectedRoutes.HandleFunc("/upload", uploadFileHandler).Methods("POST", "OPTIONS")
 	protectedRoutes.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET", "OPTIONS")
-	protectedRoutes.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE", "OPTIONS")
+	protectedRoutes.HandleFunc("/video/{videoID}", deleteFileHandler).Methods("DELETE", "OPTIONS")
 
 	router.HandleFunc("/asset/logo", logoHandler).Methods("GET")
 	router.HandleFunc("/auth/google/login", loginHandler).Methods("GET")
