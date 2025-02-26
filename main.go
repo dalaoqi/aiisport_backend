@@ -656,7 +656,6 @@ func generateJWT(userInfo map[string]interface{}) (string, error) {
 
 func getCurrentUserHandler(w http.ResponseWriter, r *http.Request) {
 	response := map[string]string{
-		"userID":    r.Context().Value("userID").(string),
 		"userEmail": r.Context().Value("userEmail").(string),
 		"userName":  r.Context().Value("userName").(string),
 		"userImage": r.Context().Value("userImage").(string),
