@@ -482,13 +482,11 @@ func getCurrentUserHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// Create a middleware to handle CORS
+// CORS Middleware
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get the origin from the request
 		origin := r.Header.Get("Origin")
 
-		// Check if the origin is allowed
 		allowedOrigins := map[string]bool{
 			"https://sportaii.com": true,
 		}
@@ -501,7 +499,6 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range")
 		}
 
-		// Handle preflight requests
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -511,18 +508,25 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func handleOptions(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+}
+
 func main() {
 	router := mux.NewRouter()
+
 	router.Use(corsMiddleware)
 	router.Use(loggingMiddleware)
 
-	// 需要 JWT 驗證的路由
 	protectedRoutes := router.PathPrefix("/").Subrouter()
 	protectedRoutes.Use(jwtMiddleware)
-	protectedRoutes.HandleFunc("/api/user", getCurrentUserHandler).Methods("GET")
-	protectedRoutes.HandleFunc("/upload", uploadFileHandler).Methods("POST")
-	protectedRoutes.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET")
-	protectedRoutes.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE")
+
+	protectedRoutes.HandleFunc("/api/user", getCurrentUserHandler).Methods("GET", "OPTIONS")
+	protectedRoutes.HandleFunc("/upload", uploadFileHandler).Methods("POST", "OPTIONS")
+	protectedRoutes.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET", "OPTIONS")
+	protectedRoutes.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE", "OPTIONS")
+
+	protectedRoutes.HandleFunc("/{any:.*}", handleOptions).Methods("OPTIONS")
 
 	router.HandleFunc("/asset/logo", logoHandler).Methods("GET")
 	router.HandleFunc("/auth/google/login", loginHandler).Methods("GET")
