@@ -372,7 +372,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to get access token", http.StatusInternalServerError)
 		return
 	}
-	log.Printf("Token: %v", token)
+
 	// 取得使用者資訊
 	client := oauthConfig.Client(context.Background(), token)
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
@@ -397,7 +397,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if exist, err := userIsExist(userInfo["email"].(string)); err != nil && !exist {
+	if exist, err := userIsExist(userInfo["email"].(string)); err == nil && !exist {
 		err := userInsert(userInfo["email"].(string), userInfo["name"].(string), userInfo["id"].(string))
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to insert user: %+v", err), http.StatusInternalServerError)
