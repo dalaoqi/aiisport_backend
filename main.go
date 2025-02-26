@@ -566,7 +566,11 @@ type Video struct {
 }
 
 func videoInsert(name, videoPath, thumbnailPath string) error {
-	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
+	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
+	if err != nil {
+		log.Fatalf("cannot initalize client: %v", err)
+		return err
+	}
 
 	newVideo := Video{
 		Name:           name,
@@ -576,9 +580,10 @@ func videoInsert(name, videoPath, thumbnailPath string) error {
 	}
 
 	var insertedVideos []Video
-	err := supabase.DB.From("videos").
-		Insert(newVideo).
-		Execute(&insertedVideos)
+	_, err = supabase.
+		From("videos").
+		Insert(newVideo, false, "", "", "exact").
+		ExecuteTo(&insertedVideos)
 
 	if err != nil {
 		return err
