@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,7 +46,7 @@ const (
 // Claims 結構，用來儲存 JWT 內的 Payload
 type Claims struct {
 	Email    string `json:"email"`
-	UserID   string `json:"user_id"`
+	UserID   int32  `json:"user_id"`
 	UserName string `json:"name"`
 	Image    string `json:"image"`
 	jwt.RegisteredClaims
@@ -108,6 +109,7 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer outFile.Close()
+	defer os.Remove(videoPath)
 
 	if _, err := io.Copy(outFile, file); err != nil {
 		http.Error(w, "Error writing the file", http.StatusInternalServerError)
@@ -133,24 +135,25 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 	videoURL := fmt.Sprintf("%s/%s/%s", SupabaseURL, SupabaseVideosBucket, hashedFileName)
 	thumbnailURL := fmt.Sprintf("%s/%s/%s", SupabaseURL, SupabaseThumbnailsBucket, thumbnailName)
 
-	// 存 Name, video_path 和 thumbnail_path 到 Supabase 的 video 資料表
-	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
-
-	// 準備要寫入的資料
-	videoRecord := map[string]interface{}{
-		"name":           originalFileName,
-		"video_path":     videoURL,
-		"thumbnail_path": thumbnailURL,
-	}
-
-	// 將記錄寫入資料庫
-	var result []map[string]interface{}
-	err = supabase.DB.From("video").Insert(videoRecord).Execute(&result)
+	err = videoInsert(originalFileName, videoURL, thumbnailURL)
 	if err != nil {
+		log.Fatalf("Failed to insert video: %+v", err)
 		http.Error(w, "Error inserting record to database", http.StatusInternalServerError)
 		return
 	}
 
+	video, err := videoGet(videoURL, thumbnailURL)
+	if err != nil {
+		log.Fatalf("Failed to get video: %+v", err)
+		http.Error(w, "Error getting record from database", http.StatusInternalServerError)
+		return
+	}
+	err = userVideoInsert(r.Context().Value("userID").(int32), (video.ID))
+	if err != nil {
+		log.Fatalf("Failed to insert user_video: %+v", err)
+		http.Error(w, "Error inserting record to database", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(fmt.Sprintf("File and thumbnail uploaded successfully: %s", hashedFileName)))
 }
@@ -273,7 +276,24 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error deleting thumbnail", http.StatusInternalServerError)
 		return
 	}
-
+	video, err := videoGet(videoName, thumbnailName)
+	if err != nil {
+		log.Fatalf("Failed to get video: %+v", err)
+		http.Error(w, "Error getting record from database", http.StatusInternalServerError)
+		return
+	}
+	err = videoDelete(videoName)
+	if err != nil {
+		log.Fatalf("Failed to delete video: %+v", err)
+		http.Error(w, "Error deleting record from database", http.StatusInternalServerError)
+		return
+	}
+	err = userVideoDelete(r.Context().Value("userID").(int32), video.ID)
+	if err != nil {
+		log.Fatalf("Failed to delete user_video: %+v", err)
+		http.Error(w, "Error deleting record from database", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(fmt.Sprintf("Video and thumbnail deleted successfully: %s", videoName)))
 }
@@ -390,13 +410,6 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("User info: %v", userInfo)
 
-	// 這裡可以選擇用 JWT 來建立登入 token
-	jwtToken, err := generateJWT(userInfo)
-	if err != nil {
-		http.Error(w, "Failed to generate JWT", http.StatusInternalServerError)
-		return
-	}
-
 	if exist, err := userIsExist(userInfo["email"].(string)); err == nil && !exist {
 		log.Println("user not existed, insert user")
 		err := userInsert(userInfo["email"].(string), userInfo["name"].(string), userInfo["id"].(string))
@@ -411,13 +424,27 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	user, err := userGet(userInfo["email"].(string))
+	if err != nil {
+		log.Printf("Failed to get user: %+v", err)
+		http.Error(w, fmt.Sprintf("Failed to get user: %+v", err), http.StatusInternalServerError)
+		return
+	}
+	userInfo["id"] = strconv.Itoa(int(user.ID))
+
+	// 這裡可以選擇用 JWT 來建立登入 token
+	jwtToken, err := generateJWT(userInfo)
+	if err != nil {
+		http.Error(w, "Failed to generate JWT", http.StatusInternalServerError)
+		return
+	}
 	// 重導向回前端首頁，並帶上 token
 	redirectURL := fmt.Sprintf("https://sportaii.com?token=%s", jwtToken)
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
 
 type User struct {
-	ID          int8      `json:"id"`
+	ID          int32     `json:"id"`
 	Email       string    `json:"email"`
 	Name        string    `json:"name"`
 	Platform_id string    `json:"platform_id"`
@@ -436,6 +463,130 @@ func userIsExist(email string) (bool, error) {
 		return false, err
 	}
 	return count == 1, nil
+}
+
+func userGet(email string) (*User, error) {
+	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
+
+	users := []User{}
+	err := supabase.DB.From("users").
+		Select("*").
+		Eq("email", email).
+		Execute(&users)
+
+	if err != nil {
+		return nil, err
+	}
+	log.Println("get user successfully:", users)
+	return &users[0], nil
+}
+
+type Video struct {
+	ID             int32     `json:"id"`
+	Name           string    `json:"name"`
+	Video_path     string    `json:"video_path"`
+	Thumbnail_path string    `json:"thumbnail_path"`
+	Created_at     time.Time `json:"created_at"`
+	Deleted_at     time.Time `json:"deleted_at"`
+}
+
+func videoInsert(name, videoPath, thumbnailPath string) error {
+	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
+
+	newVideo := Video{
+		Name:           name,
+		Video_path:     videoPath,
+		Thumbnail_path: thumbnailPath,
+		Created_at:     time.Now(),
+	}
+
+	var insertedVideos []Video
+	err := supabase.DB.From("video").
+		Insert(newVideo).
+		Execute(&insertedVideos)
+
+	if err != nil {
+		return err
+	}
+	log.Println("insert video successfully:", insertedVideos)
+	return nil
+}
+
+func videoGet(videoPath, thumbnailPath string) (*Video, error) {
+	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
+
+	videos := []Video{}
+	err := supabase.DB.From("video").
+		Select("*").
+		Eq("video_path", videoPath).
+		Eq("thumbnail_path", thumbnailPath).
+		Execute(&videos)
+
+	if err != nil {
+		return nil, err
+	}
+	log.Println("get video successfully:", videos)
+	return &videos[0], nil
+
+}
+
+func videoDelete(videoName string) error {
+	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
+
+	var deletedVideos []Video
+	err := supabase.DB.From("video").
+		Delete().
+		Eq("name", videoName).
+		Execute(&deletedVideos)
+
+	if err != nil {
+		return err
+	}
+	log.Println("delete video successfully:", deletedVideos)
+	return nil
+}
+
+type UserVideo struct {
+	ID      int32 `json:"id"`
+	UserID  int32 `json:"user_id"`
+	Videoid int32 `json:"video_id"`
+}
+
+func userVideoInsert(userID, videoID int32) error {
+	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
+
+	newUserVideo := UserVideo{
+		UserID:  userID,
+		Videoid: videoID,
+	}
+
+	var insertedUserVideos []UserVideo
+	err := supabase.DB.From("user_video").
+		Insert(newUserVideo).
+		Execute(&insertedUserVideos)
+
+	if err != nil {
+		return err
+	}
+	log.Println("insert user_video successfully:", insertedUserVideos)
+	return nil
+}
+
+func userVideoDelete(userID, videoID int32) error {
+	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
+
+	var deletedUserVideos []UserVideo
+	err := supabase.DB.From("user_video").
+		Delete().
+		Eq("user_id", strconv.Itoa(int(userID))).
+		Eq("video_id", strconv.Itoa(int(videoID))).
+		Execute(&deletedUserVideos)
+
+	if err != nil {
+		return err
+	}
+	log.Println("delete user_video successfully:", deletedUserVideos)
+	return nil
 }
 
 func userInsert(email, name, platformID string) error {
