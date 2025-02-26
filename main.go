@@ -344,6 +344,7 @@ func jwtMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
+			log.Fatalf("未提供授權 Token")
 			http.Error(w, "未提供授權 Token", http.StatusUnauthorized)
 			return
 		}
@@ -351,6 +352,7 @@ func jwtMiddleware(next http.Handler) http.Handler {
 		// Token 格式: "Bearer <token>"
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 		if tokenString == authHeader {
+			log.Fatalf("無效的 Token 格式")
 			http.Error(w, "無效的 Token 格式", http.StatusUnauthorized)
 			return
 		}
@@ -362,6 +364,7 @@ func jwtMiddleware(next http.Handler) http.Handler {
 		})
 
 		if err != nil || !token.Valid {
+			log.Fatalf("無效的 Token: %v", err)
 			http.Error(w, "無效的 Token", http.StatusUnauthorized)
 			return
 		}
@@ -632,7 +635,7 @@ func generateJWT(userInfo map[string]interface{}) (string, error) {
 	// 建立 claims
 	claims := jwt.MapClaims{
 		"email":   userInfo["email"].(string),
-		"user_id": userInfo["id"].(string),
+		"user_id": userInfo["id"].(int32),
 		"image":   userInfo["picture"].(string),
 		"name":    userInfo["name"].(string),
 		"exp":     expirationTime.Unix(), // 過期時間
