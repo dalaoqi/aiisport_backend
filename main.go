@@ -503,8 +503,16 @@ func main() {
 	corsHandler := handlers.CORS(
 		handlers.AllowedOrigins([]string{"https://sportaii.com", "http://localhost:3000"}),
 		handlers.AllowedMethods([]string{"GET", "POST", "OPTIONS", "DELETE"}),
-		handlers.AllowedHeaders([]string{"Content-Type", "Authorization"}),
+		handlers.AllowedHeaders([]string{
+			"Content-Type",
+			"Authorization",
+			"Cache-Control",
+			"Accept",
+			"X-Requested-With",
+		}),
+		handlers.ExposedHeaders([]string{"Content-Length", "Content-Range"}),
 		handlers.AllowCredentials(),
+		handlers.MaxAge(86400), // Add this: 24 hours in seconds
 	)(router)
 
 	fmt.Printf("Server running at http://0.0.0.0:%s\n", Port)
