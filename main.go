@@ -217,7 +217,7 @@ type thumbnailData struct {
 	ThumbnailURL string `json:"thumbnailURL"`
 	VideoURL     string `json:"videoURL"`
 	VideoName    string `json:"videoName"`
-	videoID      int32  `json:"videoID"`
+	VideoID      int32  `json:"videoID"`
 }
 
 func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
@@ -256,7 +256,7 @@ func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 			ThumbnailURL: thumbnailSignedUrlResp.Url,
 			VideoURL:     videoSignedUrlResp.Url,
 			VideoName:    video.Name,
-			videoID:      video.ID,
+			VideoID:      video.ID,
 		})
 	}
 
