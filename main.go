@@ -413,11 +413,11 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type User struct {
-	ID          int8   `json:"id"`
-	Email       string `json:"email"`
-	Name        string `json:"name"`
-	Platform_id string `json:"platform_id"`
-	Created_at  string `json:"created_at"`
+	ID          int8      `json:"id"`
+	Email       string    `json:"email"`
+	Name        string    `json:"name"`
+	Platform_id string    `json:"platform_id"`
+	Created_at  time.Time `json:"created_at"`
 }
 
 func userIsExist(email string) (bool, error) {
@@ -443,6 +443,7 @@ func userInsert(email, name, platformID string) error {
 		Email:       email,
 		Name:        name,
 		Platform_id: platformID,
+		Created_at:  time.Now(),
 	}
 
 	var insertedUsers []User
