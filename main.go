@@ -521,9 +521,9 @@ func main() {
 	protectedRoutes.Use(jwtMiddleware)
 
 	// Remove separate OPTIONS handlers from route definitions
-	protectedRoutes.HandleFunc("/api/user", getCurrentUserHandler).Methods("GET")
+	protectedRoutes.HandleFunc("/api/user", getCurrentUserHandler).Methods("GET", "OPTIONS")
 	protectedRoutes.HandleFunc("/upload", uploadFileHandler).Methods("POST")
-	protectedRoutes.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET")
+	protectedRoutes.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET", "OPTIONS")
 	protectedRoutes.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE")
 
 	router.HandleFunc("/asset/logo", logoHandler).Methods("GET")
