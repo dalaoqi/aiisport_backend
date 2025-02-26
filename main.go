@@ -14,12 +14,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
+	"github.com/nedpals/supabase-go"
 	supa "github.com/nedpals/supabase-go"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -395,9 +397,69 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if exist, err := userIsExist(userInfo["email"].(string)); err != nil && !exist {
+		err := userInsert(userInfo["email"].(string), userInfo["name"].(string), userInfo["id"].(string))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to insert user: %+v", err), http.StatusInternalServerError)
+			return
+		}
+	} else if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to check if user is existed: %+v", err), http.StatusInternalServerError)
+		return
+	}
+
 	// 重導向回前端首頁，並帶上 token
 	redirectURL := fmt.Sprintf("https://sportaii.com?token=%s", jwtToken)
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+}
+
+type User struct {
+	ID          int8   `json:"id"`
+	Email       string `json:"email"`
+	Name        string `json:"name"`
+	Platform_id int8   `json:"platform_id"`
+	Created_at  string `json:"created_at"`
+}
+
+func userIsExist(email string) (bool, error) {
+	supabase := supabase.CreateClient(SupabaseURL, SupabaseAPIKey)
+
+	var users []User
+	err := supabase.DB.From("users").
+		Select("*").
+		Eq("email", email).
+		Execute(&users)
+
+	if err != nil {
+		return false, err
+	}
+
+	return len(users) > 0, nil
+}
+
+func userInsert(email, name, platformID string) error {
+	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
+	_platformID, err := strconv.Atoi(platformID)
+	if err != nil {
+		return err
+	}
+
+	newUser := User{
+		Email:       email,
+		Name:        name,
+		Platform_id: int8(_platformID),
+	}
+
+	var insertedUsers []User
+	err = supabase.DB.From("users").
+		Insert(newUser).
+		Execute(&insertedUsers)
+
+	if err != nil {
+		return err
+	}
+	log.Println("使用者新增成功:", insertedUsers)
+	return nil
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
