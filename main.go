@@ -506,7 +506,7 @@ func videoInsert(name, videoPath, thumbnailPath string) error {
 	}
 
 	var insertedVideos []Video
-	err := supabase.DB.From("video").
+	err := supabase.DB.From("videos").
 		Insert(newVideo).
 		Execute(&insertedVideos)
 
@@ -521,7 +521,7 @@ func videoGet(videoPath, thumbnailPath string) (*Video, error) {
 	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
 
 	videos := []Video{}
-	err := supabase.DB.From("video").
+	err := supabase.DB.From("videos").
 		Select("*").
 		Eq("video_path", videoPath).
 		Eq("thumbnail_path", thumbnailPath).
@@ -539,7 +539,7 @@ func videoDelete(videoName string) error {
 	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
 
 	var deletedVideos []Video
-	err := supabase.DB.From("video").
+	err := supabase.DB.From("videos").
 		Delete().
 		Eq("name", videoName).
 		Execute(&deletedVideos)
@@ -566,7 +566,7 @@ func userVideoInsert(userID, videoID int32) error {
 	}
 
 	var insertedUserVideos []UserVideo
-	err := supabase.DB.From("user_video").
+	err := supabase.DB.From("user_videos").
 		Insert(newUserVideo).
 		Execute(&insertedUserVideos)
 
@@ -581,7 +581,7 @@ func userVideoDelete(userID, videoID int32) error {
 	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
 
 	var deletedUserVideos []UserVideo
-	err := supabase.DB.From("user_video").
+	err := supabase.DB.From("user_videos").
 		Delete().
 		Eq("user_id", strconv.Itoa(int(userID))).
 		Eq("video_id", strconv.Itoa(int(videoID))).
