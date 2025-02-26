@@ -468,19 +468,18 @@ func userIsExist(email string) (bool, error) {
 }
 
 func userGet(email string) (*User, error) {
-	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
+	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
+	if err != nil {
+		log.Fatalf("cannot initalize client: %v", err)
+		return nil, err
+	}
 
-	users := []User{}
-	err := supabase.DB.From("users").
-		Select("*").
-		Eq("email", email).
-		Execute(&users)
-
+	user := User{}
+	_, err = supabase.From("users").Select("*", "exact", false).Eq("email", email).Single().ExecuteTo(&user)
 	if err != nil {
 		return nil, err
 	}
-	log.Println("get user successfully:", users)
-	return &users[0], nil
+	return &user, nil
 }
 
 type Video struct {
