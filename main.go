@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -417,7 +416,7 @@ type User struct {
 	ID          int8   `json:"id"`
 	Email       string `json:"email"`
 	Name        string `json:"name"`
-	Platform_id int8   `json:"platform_id"`
+	Platform_id string `json:"platform_id"`
 	Created_at  string `json:"created_at"`
 }
 
@@ -439,19 +438,15 @@ func userIsExist(email string) (bool, error) {
 
 func userInsert(email, name, platformID string) error {
 	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
-	_platformID, err := strconv.Atoi(platformID)
-	if err != nil {
-		return err
-	}
 
 	newUser := User{
 		Email:       email,
 		Name:        name,
-		Platform_id: int8(_platformID),
+		Platform_id: platformID,
 	}
 
 	var insertedUsers []User
-	err = supabase.DB.From("users").
+	err := supabase.DB.From("users").
 		Insert(newUser).
 		Execute(&insertedUsers)
 
