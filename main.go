@@ -20,8 +20,9 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
-	"github.com/nedpals/supabase-go"
+
 	supa "github.com/nedpals/supabase-go"
+	"github.com/supabase-community/supabase-go"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -424,19 +425,17 @@ type User struct {
 }
 
 func userIsExist(email string) (bool, error) {
-	supabase := supabase.CreateClient(SupabaseURL, SupabaseAPIKey)
-
-	var users []User
-	err := supabase.DB.From("users").
-		Select("*").
-		Eq("email", email).
-		Execute(&users)
-	log.Printf("users: %+v", users)
+	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
+	if err != nil {
+		log.Fatalf("cannot initalize client: %v", err)
+		return false, err
+	}
+	users := []User{}
+	count, err := supabase.From("users").Select("*", "exact", false).Eq("email", email).ExecuteTo(&users)
 	if err != nil {
 		return false, err
 	}
-
-	return len(users) > 0, nil
+	return count == 1, nil
 }
 
 func userInsert(email, name, platformID string) error {
