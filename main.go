@@ -488,7 +488,8 @@ func corsMiddleware(next http.Handler) http.Handler {
 		origin := r.Header.Get("Origin")
 
 		allowedOrigins := map[string]bool{
-			"https://sportaii.com": true,
+			"https://sportaii.com":  true,
+			"https://sportaii.com/": true,
 		}
 
 		if allowedOrigins[origin] {
