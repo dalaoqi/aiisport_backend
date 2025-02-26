@@ -518,21 +518,25 @@ func videoInsert(name, videoPath, thumbnailPath string) error {
 }
 
 func videoGet(videoPath, thumbnailPath string) (*Video, error) {
-	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
+	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
+	if err != nil {
+		log.Fatalf("cannot initalize client: %v", err)
+		return nil, err
+	}
 
-	videos := []Video{}
-	err := supabase.DB.From("videos").
-		Select("*").
+	video := Video{}
+	_, err = supabase.
+		From("videos").
+		Select("*", "exact", false).
 		Eq("video_path", videoPath).
 		Eq("thumbnail_path", thumbnailPath).
-		Execute(&videos)
+		Single().
+		ExecuteTo(&video)
 
 	if err != nil {
 		return nil, err
 	}
-	log.Println("get video successfully:", videos)
-	return &videos[0], nil
-
+	return &video, nil
 }
 
 func videoDelete(videoName string) error {
