@@ -397,12 +397,15 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if exist, err := userIsExist(userInfo["email"].(string)); err == nil && !exist {
+		log.Println("user not existed, insert user")
 		err := userInsert(userInfo["email"].(string), userInfo["name"].(string), userInfo["id"].(string))
 		if err != nil {
+			log.Printf("Failed to insert user: %+v", err)
 			http.Error(w, fmt.Sprintf("Failed to insert user: %+v", err), http.StatusInternalServerError)
 			return
 		}
 	} else if err != nil {
+		log.Printf("Failed to check if user is existed: %+v", err)
 		http.Error(w, fmt.Sprintf("Failed to check if user is existed: %+v", err), http.StatusInternalServerError)
 		return
 	}
@@ -428,7 +431,7 @@ func userIsExist(email string) (bool, error) {
 		Select("*").
 		Eq("email", email).
 		Execute(&users)
-
+	log.Printf("users: %+v", users)
 	if err != nil {
 		return false, err
 	}
@@ -454,7 +457,7 @@ func userInsert(email, name, platformID string) error {
 	if err != nil {
 		return err
 	}
-	log.Println("使用者新增成功:", insertedUsers)
+	log.Println("insert user successfully:", insertedUsers)
 	return nil
 }
 
