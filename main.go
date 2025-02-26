@@ -380,6 +380,7 @@ func jwtMiddleware(next http.Handler) http.Handler {
 func loginHandler(w http.ResponseWriter, r *http.Request) {
 	oauthState := generateStateOauthCookie(w)
 	url := oauthConfig.AuthCodeURL(oauthState, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
+	log.Printf("Redirecting to %s", url)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
