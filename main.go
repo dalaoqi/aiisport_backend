@@ -497,6 +497,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin")
 			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range")
+			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
 		}
 
 		if r.Method == "OPTIONS" {
@@ -508,9 +509,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func handleOptions(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-}
+// Remove the separate handleOptions function as it's now handled in the middleware
 
 func main() {
 	router := mux.NewRouter()
@@ -521,12 +520,11 @@ func main() {
 	protectedRoutes := router.PathPrefix("/").Subrouter()
 	protectedRoutes.Use(jwtMiddleware)
 
-	protectedRoutes.HandleFunc("/api/user", getCurrentUserHandler).Methods("GET", "OPTIONS")
-	protectedRoutes.HandleFunc("/upload", uploadFileHandler).Methods("POST", "OPTIONS")
-	protectedRoutes.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET", "OPTIONS")
-	protectedRoutes.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE", "OPTIONS")
-
-	protectedRoutes.HandleFunc("/{any:.*}", handleOptions).Methods("OPTIONS")
+	// Remove separate OPTIONS handlers from route definitions
+	protectedRoutes.HandleFunc("/api/user", getCurrentUserHandler).Methods("GET")
+	protectedRoutes.HandleFunc("/upload", uploadFileHandler).Methods("POST")
+	protectedRoutes.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET")
+	protectedRoutes.HandleFunc("/video/{videoName}", deleteFileHandler).Methods("DELETE")
 
 	router.HandleFunc("/asset/logo", logoHandler).Methods("GET")
 	router.HandleFunc("/auth/google/login", loginHandler).Methods("GET")
