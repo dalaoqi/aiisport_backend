@@ -436,7 +436,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to get user: %+v", err), http.StatusInternalServerError)
 		return
 	}
-	userInfo["id"] = strconv.Itoa(int(user.ID))
+	userInfo["id"] = user.ID
 
 	// 這裡可以選擇用 JWT 來建立登入 token
 	jwtToken, err := generateJWT(userInfo)
