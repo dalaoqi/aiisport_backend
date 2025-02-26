@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 	supa "github.com/nedpals/supabase-go"
@@ -483,8 +482,38 @@ func getCurrentUserHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+// Create a middleware to handle CORS
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Get the origin from the request
+		origin := r.Header.Get("Origin")
+
+		// Check if the origin is allowed
+		allowedOrigins := map[string]bool{
+			"https://sportaii.com": true,
+		}
+
+		if allowedOrigins[origin] {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin")
+			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range")
+		}
+
+		// Handle preflight requests
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	router := mux.NewRouter()
+	router.Use(corsMiddleware)
 	router.Use(loggingMiddleware)
 
 	// 需要 JWT 驗證的路由
@@ -499,24 +528,6 @@ func main() {
 	router.HandleFunc("/auth/google/login", loginHandler).Methods("GET")
 	router.HandleFunc("/auth/google/callback", callbackHandler).Methods("GET")
 
-	// 使用 gorilla/handlers 套件處理 CORS
-	corsHandler := handlers.CORS(
-		handlers.AllowedOrigins([]string{"https://sportaii.com"}), // Remove * and specify exact origin
-		handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}),
-		handlers.AllowedHeaders([]string{
-			"Content-Type",
-			"Authorization",
-			"X-Requested-With",
-			"Accept",
-			"Origin",
-		}),
-		handlers.ExposedHeaders([]string{
-			"Content-Length",
-			"Content-Range",
-		}),
-		handlers.AllowCredentials(),
-	)(router)
-
 	fmt.Printf("Server running at http://0.0.0.0:%s\n", Port)
-	log.Fatal(http.ListenAndServe("0.0.0.0:"+Port, corsHandler))
+	log.Fatal(http.ListenAndServe("0.0.0.0:"+Port, router))
 }
