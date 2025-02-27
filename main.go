@@ -46,7 +46,7 @@ const (
 // Claims 結構，用來儲存 JWT 內的 Payload
 type Claims struct {
 	Email    string `json:"email"`
-	UserID   int32  `json:"user_id"`
+	UserID   string `json:"user_id"`
 	UserName string `json:"name"`
 	Image    string `json:"image"`
 	jwt.RegisteredClaims
@@ -148,7 +148,7 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error getting record from database", http.StatusInternalServerError)
 		return
 	}
-	err = userVideoInsert(r.Context().Value("userID").(int32), (video.ID))
+	err = userVideoInsert(r.Context().Value("userID").(string), video.ID)
 	if err != nil {
 		log.Fatalf("Failed to insert user_video: %+v", err)
 		http.Error(w, "Error inserting record to database", http.StatusInternalServerError)
@@ -217,7 +217,7 @@ type thumbnailData struct {
 	ThumbnailURL string `json:"thumbnailURL"`
 	VideoURL     string `json:"videoURL"`
 	VideoName    string `json:"videoName"`
-	VideoID      int32  `json:"videoID"`
+	VideoID      string `json:"videoID"`
 }
 
 func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
@@ -293,7 +293,7 @@ func getVideoByUser(userID int32) ([]Video, error) {
 		_, err = supabase.
 			From("videos").
 			Select("*", "exact", false).
-			Eq("id", strconv.Itoa(int(userVideo.VideoId))).
+			Eq("id", userVideo.VideoId).
 			Single().
 			ExecuteTo(&video)
 		if err != nil {
@@ -358,7 +358,7 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error deleting record from database", http.StatusInternalServerError)
 		return
 	}
-	err = userVideoDelete(r.Context().Value("userID").(int32), video.ID)
+	err = userVideoDelete(r.Context().Value("userID").(string), video.ID)
 	if err != nil {
 		log.Fatalf("Failed to delete user_video: %+v", err)
 		http.Error(w, "Error deleting record from database", http.StatusInternalServerError)
@@ -632,11 +632,11 @@ func videoDelete(videoName string) error {
 
 type UserVideo struct {
 	ID      string `json:"id"`
-	UserID  int32  `json:"user_id"`
-	VideoId int32  `json:"video_id"`
+	UserID  string `json:"user_id"`
+	VideoId string `json:"video_id"`
 }
 
-func userVideoInsert(userID, videoID int32) error {
+func userVideoInsert(userID, videoID string) error {
 	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
 
 	newUserVideo := UserVideo{
@@ -656,14 +656,14 @@ func userVideoInsert(userID, videoID int32) error {
 	return nil
 }
 
-func userVideoDelete(userID, videoID int32) error {
+func userVideoDelete(userID, videoID string) error {
 	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
 
 	var deletedUserVideos []UserVideo
 	err := supabase.DB.From("user_videos").
 		Delete().
-		Eq("user_id", strconv.Itoa(int(userID))).
-		Eq("video_id", strconv.Itoa(int(videoID))).
+		Eq("user_id", userID).
+		Eq("video_id", videoID).
 		Execute(&deletedUserVideos)
 
 	if err != nil {
@@ -714,7 +714,7 @@ func generateJWT(userInfo map[string]interface{}) (string, error) {
 	// 建立 claims
 	claims := jwt.MapClaims{
 		"email":   userInfo["email"].(string),
-		"user_id": userInfo["id"].(int32),
+		"user_id": userInfo["id"].(string),
 		"image":   userInfo["picture"].(string),
 		"name":    userInfo["name"].(string),
 		"exp":     expirationTime.Unix(), // 過期時間
