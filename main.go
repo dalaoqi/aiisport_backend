@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -222,7 +221,7 @@ type thumbnailData struct {
 }
 
 func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
-	videos, err := getVideoByUser(r.Context().Value("userID").(int32))
+	videos, err := getVideoByUser(r.Context().Value("userID").(string))
 	if err != nil {
 		log.Fatalf("Failed to get videos: %+v", err)
 		http.Error(w, "Error getting records from database", http.StatusInternalServerError)
@@ -270,7 +269,7 @@ func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func getVideoByUser(userID int32) ([]Video, error) {
+func getVideoByUser(userID string) ([]Video, error) {
 	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
 	if err != nil {
 		log.Fatalf("cannot initalize client: %v", err)
@@ -283,7 +282,7 @@ func getVideoByUser(userID int32) ([]Video, error) {
 	_, err = supabase.
 		From("user_videos").
 		Select("*", "exact", false).
-		Filter("user_id", "eq", strconv.Itoa(int(userID))).
+		Filter("user_id", "eq", userID).
 		ExecuteTo(&userVideos)
 	if err != nil {
 		log.Fatalf("error getting user videos: %v", err)
