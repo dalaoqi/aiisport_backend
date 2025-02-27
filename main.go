@@ -520,7 +520,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type User struct {
-	ID          int32     `json:"id"`
+	ID          string    `json:"id"`
 	Email       string    `json:"email"`
 	Name        string    `json:"name"`
 	Platform_id string    `json:"platform_id"`
@@ -557,7 +557,7 @@ func userGet(email string) (*User, error) {
 }
 
 type Video struct {
-	ID             int32     `json:"id"`
+	ID             string    `json:"id"`
 	Name           string    `json:"name"`
 	Video_path     string    `json:"video_path"`
 	Thumbnail_path string    `json:"thumbnail_path"`
@@ -631,9 +631,9 @@ func videoDelete(videoName string) error {
 }
 
 type UserVideo struct {
-	ID      int32 `json:"id"`
-	UserID  int32 `json:"user_id"`
-	VideoId int32 `json:"video_id"`
+	ID      string `json:"id"`
+	UserID  int32  `json:"user_id"`
+	VideoId int32  `json:"video_id"`
 }
 
 func userVideoInsert(userID, videoID int32) error {
