@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 
@@ -573,6 +574,7 @@ func videoInsert(name, videoPath, thumbnailPath string) error {
 	}
 
 	newVideo := Video{
+		ID:             uuid.New().String(),
 		Name:           name,
 		Video_path:     videoPath,
 		Thumbnail_path: thumbnailPath,
@@ -640,6 +642,7 @@ func userVideoInsert(userID, videoID string) error {
 	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
 
 	newUserVideo := UserVideo{
+		ID:      uuid.New().String(),
 		UserID:  userID,
 		VideoId: videoID,
 	}
@@ -677,6 +680,7 @@ func userInsert(email, name, platformID string) error {
 	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
 
 	newUser := User{
+		ID:          uuid.New().String(),
 		Email:       email,
 		Name:        name,
 		Platform_id: platformID,
