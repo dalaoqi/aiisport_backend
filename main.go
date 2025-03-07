@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
+	"github.com/supabase-community/supabase-go"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"gorm.io/driver/postgres"
@@ -343,28 +344,44 @@ type thumbnailData struct {
 
 func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value("userID").(string)
-	var userVideos []UserVideo
-	if err := DB.Where("user_id = ?", userID).Find(&userVideos).Error; err != nil {
-		log.Printf("Failed to get user videos: %v", err)
-		http.Error(w, "Error getting records from database", http.StatusInternalServerError)
+	videos, err := getVideoByUser(userID)
+	if err != nil {
+		log.Printf("Failed to get videos: %v", err)
+		http.Error(w, "Error getting videos", http.StatusInternalServerError)
 		return
 	}
 
 	var thumbnails []thumbnailData
-	for _, uv := range userVideos {
-		var video Video
-		if err := DB.Where("id = ?", uv.VideoID).First(&video).Error; err != nil {
-			log.Printf("Failed to get video: %v", err)
-			continue
+	thumbnails = make([]thumbnailData, 0)
+
+	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
+	if err != nil {
+		log.Fatalf("cannot initalize client: %v", err)
+		http.Error(w, "Error initializing client", http.StatusInternalServerError)
+		return
+	}
+
+	for _, video := range videos {
+		thumbnailSignedUrlResp, err := supabase.Storage.CreateSignedUrl(SupabaseThumbnailsBucket, strings.TrimPrefix(video.ThumbnailPath, fmt.Sprintf("%s/%s/", SupabaseURL, SupabaseThumbnailsBucket)), 86400)
+		if err != nil {
+			log.Fatalf("Failed to get thumbnail signed URL: %+v", err)
+			http.Error(w, "Error getting thumbnail signed URL", http.StatusInternalServerError)
+			return
+		}
+
+		videoSignedUrlResp, err := supabase.Storage.CreateSignedUrl(SupabaseVideosBucket, strings.TrimPrefix(video.VideoPath, fmt.Sprintf("%s/%s/", SupabaseURL, SupabaseVideosBucket)), 86400)
+		if err != nil {
+			log.Fatalf("Failed to get video signed URL: %+v", err)
+			http.Error(w, "Error getting video signed URL", http.StatusInternalServerError)
+			return
 		}
 		thumbnails = append(thumbnails, thumbnailData{
-			ThumbnailURL: video.ThumbnailPath,
-			VideoURL:     video.VideoPath,
+			ThumbnailURL: thumbnailSignedUrlResp.SignedURL,
+			VideoURL:     videoSignedUrlResp.SignedURL,
 			VideoName:    video.Name,
 			VideoID:      video.ID,
 		})
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	response := thumbnailResponse{Thumbnails: thumbnails}
