@@ -21,11 +21,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
-
-	supa "github.com/nedpals/supabase-go"
-	"github.com/supabase-community/supabase-go"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 var (
@@ -34,8 +33,8 @@ var (
 	Port            string
 	StorageEndpoint = "/storage/v1/object"
 	oauthConfig     *oauth2.Config
-
-	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
+	jwtSecret       = []byte(os.Getenv("JWT_SECRET"))
+	DB              *gorm.DB // GORM 資料庫實例
 )
 
 const (
@@ -52,6 +51,61 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+type User struct {
+	ID         string    `gorm:"type:uuid;primaryKey" json:"id"`
+	Email      string    `gorm:"type:text;not null;unique" json:"email"`
+	Name       string    `gorm:"type:text;not null" json:"name"`
+	PlatformID string    `gorm:"type:text;not null" json:"platform_id"`
+	CreatedAt  time.Time `gorm:"default:now()" json:"created_at"`
+}
+
+type Video struct {
+	ID            string    `gorm:"type:uuid;primaryKey" json:"id"`
+	Name          string    `gorm:"type:text;not null" json:"name"`
+	VideoPath     string    `gorm:"type:text;not null" json:"video_path"`
+	ThumbnailPath string    `gorm:"type:text;not null" json:"thumbnail_path"`
+	CreatedAt     time.Time `gorm:"default:now()" json:"created_at"`
+	DeletedAt     time.Time `gorm:"default:'0001-01-01 00:00:00+00'" json:"deleted_at"`
+}
+
+type UserVideo struct {
+	ID      string `gorm:"type:uuid;primaryKey" json:"id"`
+	UserID  string `gorm:"type:uuid;not null" json:"user_id"`
+	VideoID string `gorm:"type:uuid;not null" json:"video_id"`
+}
+
+type Highlight struct {
+	ID              string        `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	VideoID         string        `gorm:"type:uuid;not null" json:"video_id"`
+	HighlightTypeID int           `gorm:"not null" json:"highlight_type_id"`
+	StartTime       *int          `gorm:"null" json:"start_time"`
+	EndTime         *int          `gorm:"null" json:"end_time"`
+	Description     *string       `gorm:"type:text;null" json:"description"`
+	CreatedAt       time.Time     `gorm:"default:now()" json:"created_at"`
+	DeletedAt       time.Time     `gorm:"default:'0001-01-01 00:00:00+00'" json:"deleted_at"`
+	Video           Video         `gorm:"foreignKey:VideoID;references:ID;constraint:OnDelete:CASCADE"`
+	HighlightType   HighlightType `gorm:"foreignKey:HighlightTypeID;references:ID;constraint:OnDelete:RESTRICT"`
+}
+
+type HighlightType struct {
+	ID          int       `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name        string    `gorm:"type:text;not null;unique" json:"name"`
+	Description *string   `gorm:"type:text;null" json:"description"`
+	CreatedAt   time.Time `gorm:"default:now()" json:"created_at"`
+	DeletedAt   time.Time `gorm:"default:'0001-01-01 00:00:00+00'" json:"deleted_at"`
+}
+
+type HighlightResponse struct {
+	ID              string  `json:"id"`
+	VideoID         string  `json:"video_id"`
+	HighlightTypeID int     `json:"highlight_type_id"`
+	HighlightType   string  `json:"highlight_type"` // 從 HighlightType 表中獲取名稱
+	StartTime       *int    `json:"start_time"`
+	EndTime         *int    `json:"end_time"`
+	Description     *string `json:"description"`
+	CreatedAt       string  `json:"created_at"`
+}
+
 func init() {
 	// 讀取 .env 檔案
 	if err := godotenv.Load(); err != nil {
@@ -64,11 +118,25 @@ func init() {
 	Port = os.Getenv("PORT")
 
 	// 檢查必要環境變數是否存在
-	requiredEnv := []string{"SUPABASE_BUCKET", "SUPABASE_URL", "SUPABASE_API_KEY", "PORT"}
+	requiredEnv := []string{"SUPABASE_URL", "SUPABASE_API_KEY", "PORT", "DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT"}
 	for _, env := range requiredEnv {
 		if os.Getenv(env) == "" {
 			log.Fatalf("環境變數 %s 未設定", env)
 		}
+	}
+
+	// 初始化 GORM 資料庫連接
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=UTC",
+		os.Getenv("DB_HOST"), os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME"), os.Getenv("DB_PORT"))
+	var err error
+	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("無法連接到資料庫: %v", err)
+	}
+
+	// 自動遷移資料庫結構
+	if err := DB.AutoMigrate(&User{}, &Video{}, &UserVideo{}, &Highlight{}, &HighlightType{}); err != nil {
+		log.Fatalf("資料庫遷移失敗: %v", err)
 	}
 
 	oauthConfig = &oauth2.Config{
@@ -81,9 +149,57 @@ func init() {
 	log.Printf("OAuth Config: %v", oauthConfig.RedirectURL)
 }
 
+func getVideoHighlightsHandler(w http.ResponseWriter, r *http.Request) {
+	// 從 URL 參數中獲取 videoID
+	vars := mux.Vars(r)
+	videoID := vars["videoID"]
+
+	// 檢查 video 是否存在
+	var video Video
+	if err := DB.Where("id = ?", videoID).First(&video).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			http.Error(w, "Video not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("Failed to get video: %v", err)
+		http.Error(w, "Error retrieving video", http.StatusInternalServerError)
+		return
+	}
+
+	// 查詢該 video 的所有 highlights，並關聯 highlight_types 表
+	var highlights []Highlight
+	if err := DB.Preload("HighlightType").Where("video_id = ?", videoID).Find(&highlights).Error; err != nil {
+		log.Printf("Failed to get highlights: %v", err)
+		http.Error(w, "Error retrieving highlights", http.StatusInternalServerError)
+		return
+	}
+
+	// 轉換為回應結構
+	var response []HighlightResponse
+	for _, h := range highlights {
+		response = append(response, HighlightResponse{
+			ID:              h.ID,
+			VideoID:         h.VideoID,
+			HighlightTypeID: h.HighlightTypeID,
+			HighlightType:   h.HighlightType.Name, // 從關聯的 HighlightType 中獲取名稱
+			StartTime:       h.StartTime,
+			EndTime:         h.EndTime,
+			Description:     h.Description,
+			CreatedAt:       h.CreatedAt.Format(time.RFC3339), // 格式化時間
+		})
+	}
+
+	// 回傳 JSON 回應
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, "Error encoding response", http.StatusInternalServerError)
+	}
+}
+
 // 上傳影片並生成縮圖
 func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
-	err := r.ParseMultipartForm(100 << 20) // 限制上傳檔案大小 50 MB
+	err := r.ParseMultipartForm(100 << 20) // 限制上傳檔案大小 100 MB
 	if err != nil {
 		http.Error(w, "Error parsing form data", http.StatusBadRequest)
 		return
@@ -124,10 +240,8 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 上傳影片到 Supabase
+	// 上傳影片和縮圖到 Supabase（這裡假設您仍使用 Supabase Storage）
 	uploadToSupabase(SupabaseVideosBucket, videoPath, hashedFileName, handler.Header.Get("Content-Type"))
-
-	// 上傳縮圖到 Supabase
 	thumbnailName := strings.Replace(hashedFileName, filepath.Ext(hashedFileName), ".jpg", 1)
 	uploadToSupabase(SupabaseThumbnailsBucket, thumbnailPath, thumbnailName, "image/jpeg")
 
@@ -135,25 +249,33 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 	videoURL := fmt.Sprintf("%s/%s/%s", SupabaseURL, SupabaseVideosBucket, hashedFileName)
 	thumbnailURL := fmt.Sprintf("%s/%s/%s", SupabaseURL, SupabaseThumbnailsBucket, thumbnailName)
 
-	err = videoInsert(originalFileName, videoURL, thumbnailURL)
-	if err != nil {
-		log.Fatalf("Failed to insert video: %+v", err)
+	// 使用 GORM 插入影片資料
+	newVideo := Video{
+		ID:            uuid.New().String(),
+		Name:          originalFileName,
+		VideoPath:     videoURL,
+		ThumbnailPath: thumbnailURL,
+		CreatedAt:     time.Now(),
+	}
+	if err := DB.Create(&newVideo).Error; err != nil {
+		log.Printf("Failed to insert video: %v", err)
 		http.Error(w, "Error inserting record to database", http.StatusInternalServerError)
 		return
 	}
 
-	video, err := videoGet(videoURL, thumbnailURL)
-	if err != nil {
-		log.Fatalf("Failed to get video: %+v", err)
-		http.Error(w, "Error getting record from database", http.StatusInternalServerError)
-		return
+	// 插入 user_videos 關聯
+	userID := r.Context().Value("userID").(string)
+	newUserVideo := UserVideo{
+		ID:      uuid.New().String(),
+		UserID:  userID,
+		VideoID: newVideo.ID,
 	}
-	err = userVideoInsert(r.Context().Value("userID").(string), video.ID)
-	if err != nil {
-		log.Fatalf("Failed to insert user_video: %+v", err)
+	if err := DB.Create(&newUserVideo).Error; err != nil {
+		log.Printf("Failed to insert user_video: %v", err)
 		http.Error(w, "Error inserting record to database", http.StatusInternalServerError)
 		return
 	}
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(fmt.Sprintf("File and thumbnail uploaded successfully: %s", hashedFileName)))
 }
@@ -168,7 +290,7 @@ func generateHashedFileName(fileName string) string {
 	return strings.ToLower(hashedFileName)
 }
 
-// 上傳檔案到 Supabase Storage
+// 上傳檔案到 Supabase Storage（未改動，因為這部分與資料庫無關）
 func uploadToSupabase(bucket, filePath, fileName, contentType string) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -184,7 +306,6 @@ func uploadToSupabase(bucket, filePath, fileName, contentType string) {
 	}
 
 	uploadURL := fmt.Sprintf("%s%s/%s/%s", SupabaseURL, StorageEndpoint, bucket, fileName)
-
 	req, err := http.NewRequest("POST", uploadURL, buffer)
 	if err != nil {
 		log.Printf("Error creating request: %v", err)
@@ -193,7 +314,7 @@ func uploadToSupabase(bucket, filePath, fileName, contentType string) {
 
 	req.Header.Set("Authorization", "Bearer "+SupabaseAPIKey)
 	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("x-upsert", "true") // 若檔名重複則覆蓋
+	req.Header.Set("x-upsert", "true")
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -221,46 +342,29 @@ type thumbnailData struct {
 }
 
 func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
-	videos, err := getVideoByUser(r.Context().Value("userID").(string))
-	if err != nil {
-		log.Fatalf("Failed to get videos: %+v", err)
+	userID := r.Context().Value("userID").(string)
+	var userVideos []UserVideo
+	if err := DB.Where("user_id = ?", userID).Find(&userVideos).Error; err != nil {
+		log.Printf("Failed to get user videos: %v", err)
 		http.Error(w, "Error getting records from database", http.StatusInternalServerError)
 		return
 	}
 
 	var thumbnails []thumbnailData
-	thumbnails = make([]thumbnailData, 0)
-
-	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
-	if err != nil {
-		log.Fatalf("cannot initalize client: %v", err)
-		http.Error(w, "Error initializing client", http.StatusInternalServerError)
-		return
-	}
-
-	for _, video := range videos {
-		thumbnailSignedUrlResp, err := supabase.Storage.CreateSignedUrl(SupabaseThumbnailsBucket, strings.TrimPrefix(video.Thumbnail_path, fmt.Sprintf("%s/%s/", SupabaseURL, SupabaseThumbnailsBucket)), 86400)
-		if err != nil {
-			log.Fatalf("Failed to get thumbnail signed URL: %+v", err)
-			http.Error(w, "Error getting thumbnail signed URL", http.StatusInternalServerError)
-			return
-		}
-
-		videoSignedUrlResp, err := supabase.Storage.CreateSignedUrl(SupabaseVideosBucket, strings.TrimPrefix(video.Video_path, fmt.Sprintf("%s/%s/", SupabaseURL, SupabaseVideosBucket)), 86400)
-		if err != nil {
-			log.Fatalf("Failed to get video signed URL: %+v", err)
-			http.Error(w, "Error getting video signed URL", http.StatusInternalServerError)
-			return
+	for _, uv := range userVideos {
+		var video Video
+		if err := DB.Where("id = ?", uv.VideoID).First(&video).Error; err != nil {
+			log.Printf("Failed to get video: %v", err)
+			continue
 		}
 		thumbnails = append(thumbnails, thumbnailData{
-			ThumbnailURL: thumbnailSignedUrlResp.SignedURL,
-			VideoURL:     videoSignedUrlResp.SignedURL,
+			ThumbnailURL: video.ThumbnailPath,
+			VideoURL:     video.VideoPath,
 			VideoName:    video.Name,
 			VideoID:      video.ID,
 		})
 	}
 
-	// 回傳 JSON
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	response := thumbnailResponse{Thumbnails: thumbnails}
@@ -270,35 +374,16 @@ func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func getVideoByUser(userID string) ([]Video, error) {
-	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
-	if err != nil {
-		log.Fatalf("cannot initalize client: %v", err)
+	var userVideos []UserVideo
+	if err := DB.Where("user_id = ?", userID).Find(&userVideos).Error; err != nil {
 		return nil, err
 	}
 
-	videos := []Video{}
-	userVideos := []UserVideo{}
-	// Get all videos by User, using the User ID
-	_, err = supabase.
-		From("user_videos").
-		Select("*", "exact", false).
-		Filter("user_id", "eq", userID).
-		ExecuteTo(&userVideos)
-	if err != nil {
-		log.Fatalf("error getting user videos: %v", err)
-		return nil, err
-	}
-	for _, userVideo := range userVideos {
-		video := Video{}
-		_, err = supabase.
-			From("videos").
-			Select("*", "exact", false).
-			Eq("id", userVideo.VideoId).
-			Single().
-			ExecuteTo(&video)
-		if err != nil {
-			log.Fatalf("error getting video by id: %v", err)
-			return nil, err
+	var videos []Video
+	for _, uv := range userVideos {
+		var video Video
+		if err := DB.Where("id = ?", uv.VideoID).First(&video).Error; err != nil {
+			continue
 		}
 		videos = append(videos, video)
 	}
@@ -306,85 +391,78 @@ func getVideoByUser(userID string) ([]Video, error) {
 }
 
 func videoGetByID(videoID string) (*Video, error) {
-	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
-	if err != nil {
-		log.Fatalf("cannot initalize client: %v", err)
-		return nil, err
-	}
-
-	video := Video{}
-	_, err = supabase.
-		From("videos").
-		Select("*", "exact", false).
-		Eq("id", videoID).
-		Single().
-		ExecuteTo(&video)
-
-	if err != nil {
+	var video Video
+	if err := DB.Where("id = ?", videoID).First(&video).Error; err != nil {
 		return nil, err
 	}
 	return &video, nil
 }
 
-// 刪除影片和縮圖
 func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
-	// 解析 URL 參數
 	vars := mux.Vars(r)
 	videoID := vars["videoID"]
+
 	video, err := videoGetByID(videoID)
 	if err != nil {
-		log.Fatalf("Failed to get video: %+v", err)
+		log.Printf("Failed to get video: %v", err)
 		http.Error(w, "Error getting record from database", http.StatusInternalServerError)
 		return
 	}
-	// 刪除影片檔案
-	err = deleteFromSupabase(SupabaseVideosBucket, strings.TrimPrefix(video.Video_path, fmt.Sprintf("%s/videos/", SupabaseURL)))
+
+	// 刪除 Supabase Storage 中的檔案
+	err = deleteFromSupabase(SupabaseVideosBucket, strings.TrimPrefix(video.VideoPath, fmt.Sprintf("%s/videos/", SupabaseURL)))
 	if err != nil {
 		http.Error(w, "Error deleting video", http.StatusInternalServerError)
 		return
 	}
-
-	// 刪除縮圖檔案（假設縮圖與影片檔案有相同名稱，但副檔名為 .jpg）
-
-	err = deleteFromSupabase(SupabaseThumbnailsBucket, strings.TrimPrefix(video.Video_path, fmt.Sprintf("%s/thumbnails/", SupabaseURL)))
+	err = deleteFromSupabase(SupabaseThumbnailsBucket, strings.TrimPrefix(video.ThumbnailPath, fmt.Sprintf("%s/thumbnails/", SupabaseURL)))
 	if err != nil {
 		http.Error(w, "Error deleting thumbnail", http.StatusInternalServerError)
 		return
 	}
 
-	err = videoDelete(video.Name)
-	if err != nil {
-		log.Fatalf("Failed to delete video: %+v", err)
+	// 使用 GORM 刪除資料庫記錄
+	if err := DB.Where("id = ?", videoID).Delete(&Video{}).Error; err != nil {
+		log.Printf("Failed to delete video: %v", err)
 		http.Error(w, "Error deleting record from database", http.StatusInternalServerError)
 		return
 	}
-	err = userVideoDelete(r.Context().Value("userID").(string), video.ID)
-	if err != nil {
-		log.Fatalf("Failed to delete user_video: %+v", err)
+	if err := DB.Where("user_id = ? AND video_id = ?", r.Context().Value("userID").(string), videoID).Delete(&UserVideo{}).Error; err != nil {
+		log.Printf("Failed to delete user_video: %v", err)
 		http.Error(w, "Error deleting record from database", http.StatusInternalServerError)
 		return
 	}
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(fmt.Sprintf("Video and thumbnail deleted successfully: %s", video.Name)))
 }
 
-// 從 Supabase Storage 刪除檔案
+// 從 Supabase Storage 刪除檔案（未改動）
 func deleteFromSupabase(bucket, fileName string) error {
-	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
+	// 這裡假設仍使用 Supabase Storage，保留原有邏輯
+	uploadURL := fmt.Sprintf("%s%s/%s/%s", SupabaseURL, StorageEndpoint, bucket, fileName)
+	req, err := http.NewRequest("DELETE", uploadURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+SupabaseAPIKey)
 
-	// 刪除檔案
-	resp := supabase.Storage.From(bucket).Remove([]string{fileName})
-	if resp.Key != "" {
-		return fmt.Errorf("error deleting file: %s", resp.Message)
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("error deleting file: %s", string(body))
 	}
 	return nil
 }
 
 func logoHandler(w http.ResponseWriter, r *http.Request) {
-	// 設定檔案路徑
 	logoPath := "assets/logo.png"
-
-	// 開啟檔案
 	file, err := os.Open(logoPath)
 	if err != nil {
 		http.Error(w, "Logo not found", http.StatusNotFound)
@@ -392,10 +470,7 @@ func logoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// 設定 Content-Type 為圖片格式
 	w.Header().Set("Content-Type", "image/png")
-
-	// 將檔案內容寫入回應
 	if _, err := io.Copy(w, file); err != nil {
 		http.Error(w, "Error serving logo", http.StatusInternalServerError)
 	}
@@ -404,42 +479,32 @@ func logoHandler(w http.ResponseWriter, r *http.Request) {
 func generateStateOauthCookie(w http.ResponseWriter) string {
 	b := make([]byte, 16)
 	rand.Read(b)
-	state := base64.URLEncoding.EncodeToString(b)
-
-	return state
+	return base64.URLEncoding.EncodeToString(b)
 }
 
-// JWT 驗證 Middleware
 func jwtMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			log.Fatalf("未提供授權 Token")
 			http.Error(w, "未提供授權 Token", http.StatusUnauthorized)
 			return
 		}
 
-		// Token 格式: "Bearer <token>"
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 		if tokenString == authHeader {
-			log.Fatalf("無效的 Token 格式")
 			http.Error(w, "無效的 Token 格式", http.StatusUnauthorized)
 			return
 		}
 
-		// 解析 Token
 		claims := &Claims{}
 		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-			return []byte(jwtSecret), nil
+			return jwtSecret, nil
 		})
-
 		if err != nil || !token.Valid {
-			log.Fatalf("無效的 Token: %v", err)
 			http.Error(w, "無效的 Token", http.StatusUnauthorized)
 			return
 		}
 
-		// 將用戶資訊存入 Context，讓後續處理可使用
 		ctx := context.WithValue(r.Context(), "userID", claims.UserID)
 		ctx = context.WithValue(ctx, "userEmail", claims.Email)
 		ctx = context.WithValue(ctx, "userName", claims.UserName)
@@ -449,253 +514,126 @@ func jwtMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// 處理登入請求，導向 Google OAuth 認證
 func loginHandler(w http.ResponseWriter, r *http.Request) {
 	oauthState := generateStateOauthCookie(w)
 	url := oauthConfig.AuthCodeURL(oauthState, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
-	log.Printf("Redirecting to %s", url)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
-// 處理 Google OAuth 回調
 func callbackHandler(w http.ResponseWriter, r *http.Request) {
-	// 取得授權碼
 	code := r.URL.Query().Get("code")
 	token, err := oauthConfig.Exchange(context.Background(), code)
 	if err != nil {
-		log.Fatalf("Failed to exchange token: %v", err)
 		http.Error(w, "Failed to get access token", http.StatusInternalServerError)
 		return
 	}
 
-	// 取得使用者資訊
 	client := oauthConfig.Client(context.Background(), token)
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
 	if err != nil {
-		log.Fatalf("Failed to get user info: %v", err)
 		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
 		return
 	}
 	defer resp.Body.Close()
 
-	// 解析使用者資訊
 	var userInfo map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
 		http.Error(w, "Failed to parse user info", http.StatusInternalServerError)
 		return
 	}
-	log.Printf("User info: %v", userInfo)
 
-	if exist, err := userIsExist(userInfo["email"].(string)); err == nil && !exist {
-		log.Println("user not existed, insert user")
-		err := userInsert(userInfo["email"].(string), userInfo["name"].(string), userInfo["id"].(string))
-		if err != nil {
-			log.Printf("Failed to insert user: %+v", err)
-			http.Error(w, fmt.Sprintf("Failed to insert user: %+v", err), http.StatusInternalServerError)
+	var user User
+	if err := DB.Where("email = ?", userInfo["email"].(string)).First(&user).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			user = User{
+				ID:         uuid.New().String(),
+				Email:      userInfo["email"].(string),
+				Name:       userInfo["name"].(string),
+				PlatformID: userInfo["id"].(string),
+				CreatedAt:  time.Now(),
+			}
+			if err := DB.Create(&user).Error; err != nil {
+				http.Error(w, fmt.Sprintf("Failed to insert user: %v", err), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			http.Error(w, fmt.Sprintf("Failed to check user: %v", err), http.StatusInternalServerError)
 			return
 		}
-	} else if err != nil {
-		log.Printf("Failed to check if user is existed: %+v", err)
-		http.Error(w, fmt.Sprintf("Failed to check if user is existed: %+v", err), http.StatusInternalServerError)
-		return
 	}
 
-	user, err := userGet(userInfo["email"].(string))
-	if err != nil {
-		log.Printf("Failed to get user: %+v", err)
-		http.Error(w, fmt.Sprintf("Failed to get user: %+v", err), http.StatusInternalServerError)
-		return
-	}
 	userInfo["id"] = user.ID
-
-	// 這裡可以選擇用 JWT 來建立登入 token
 	jwtToken, err := generateJWT(userInfo)
 	if err != nil {
 		http.Error(w, "Failed to generate JWT", http.StatusInternalServerError)
 		return
 	}
-	// 重導向回前端首頁，並帶上 token
+
 	redirectURL := fmt.Sprintf("https://sportaii.com?token=%s", jwtToken)
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
 
-type User struct {
-	ID          string    `json:"id"`
-	Email       string    `json:"email"`
-	Name        string    `json:"name"`
-	Platform_id string    `json:"platform_id"`
-	Created_at  time.Time `json:"created_at"`
-}
-
 func userIsExist(email string) (bool, error) {
-	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
-	if err != nil {
-		log.Fatalf("cannot initalize client: %v", err)
+	var count int64
+	if err := DB.Model(&User{}).Where("email = ?", email).Count(&count).Error; err != nil {
 		return false, err
 	}
-	users := []User{}
-	count, err := supabase.From("users").Select("*", "exact", false).Eq("email", email).ExecuteTo(&users)
-	if err != nil {
-		return false, err
-	}
-	return count == 1, nil
+	return count > 0, nil
 }
 
 func userGet(email string) (*User, error) {
-	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
-	if err != nil {
-		log.Fatalf("cannot initalize client: %v", err)
-		return nil, err
-	}
-
-	user := User{}
-	_, err = supabase.From("users").Select("*", "exact", false).Eq("email", email).Single().ExecuteTo(&user)
-	if err != nil {
+	var user User
+	if err := DB.Where("email = ?", email).First(&user).Error; err != nil {
 		return nil, err
 	}
 	return &user, nil
 }
 
-type Video struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	Video_path     string    `json:"video_path"`
-	Thumbnail_path string    `json:"thumbnail_path"`
-	Created_at     time.Time `json:"created_at"`
-	Deleted_at     time.Time `json:"deleted_at"`
-}
-
 func videoInsert(name, videoPath, thumbnailPath string) error {
-	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
-	if err != nil {
-		log.Fatalf("cannot initalize client: %v", err)
-		return err
-	}
-
 	newVideo := Video{
-		ID:             uuid.New().String(),
-		Name:           name,
-		Video_path:     videoPath,
-		Thumbnail_path: thumbnailPath,
-		Created_at:     time.Now(),
+		ID:            uuid.New().String(),
+		Name:          name,
+		VideoPath:     videoPath,
+		ThumbnailPath: thumbnailPath,
+		CreatedAt:     time.Now(),
 	}
-
-	var insertedVideos []Video
-	_, err = supabase.
-		From("videos").
-		Insert(newVideo, false, "", "", "exact").
-		ExecuteTo(&insertedVideos)
-
-	if err != nil {
-		return err
-	}
-	log.Println("insert video successfully:", insertedVideos)
-	return nil
+	return DB.Create(&newVideo).Error
 }
 
 func videoGet(videoPath, thumbnailPath string) (*Video, error) {
-	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
-	if err != nil {
-		log.Fatalf("cannot initalize client: %v", err)
-		return nil, err
-	}
-
-	video := Video{}
-	_, err = supabase.
-		From("videos").
-		Select("*", "exact", false).
-		Eq("video_path", videoPath).
-		Eq("thumbnail_path", thumbnailPath).
-		Single().
-		ExecuteTo(&video)
-
-	if err != nil {
+	var video Video
+	if err := DB.Where("video_path = ? AND thumbnail_path = ?", videoPath, thumbnailPath).First(&video).Error; err != nil {
 		return nil, err
 	}
 	return &video, nil
 }
 
-func videoDelete(videoName string) error {
-	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
-
-	var deletedVideos []Video
-	err := supabase.DB.From("videos").
-		Delete().
-		Eq("name", videoName).
-		Execute(&deletedVideos)
-
-	if err != nil {
-		return err
-	}
-	log.Println("delete video successfully:", deletedVideos)
-	return nil
-}
-
-type UserVideo struct {
-	ID      string `json:"id"`
-	UserID  string `json:"user_id"`
-	VideoId string `json:"video_id"`
+func videoDelete(videoID string) error {
+	return DB.Where("id = ?", videoID).Delete(&Video{}).Error
 }
 
 func userVideoInsert(userID, videoID string) error {
-	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
-
 	newUserVideo := UserVideo{
 		ID:      uuid.New().String(),
 		UserID:  userID,
-		VideoId: videoID,
+		VideoID: videoID,
 	}
-
-	var insertedUserVideos []UserVideo
-	err := supabase.DB.From("user_videos").
-		Insert(newUserVideo).
-		Execute(&insertedUserVideos)
-
-	if err != nil {
-		return err
-	}
-	log.Println("insert user_video successfully:", insertedUserVideos)
-	return nil
+	return DB.Create(&newUserVideo).Error
 }
 
 func userVideoDelete(userID, videoID string) error {
-	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
-
-	var deletedUserVideos []UserVideo
-	err := supabase.DB.From("user_videos").
-		Delete().
-		Eq("user_id", userID).
-		Eq("video_id", videoID).
-		Execute(&deletedUserVideos)
-
-	if err != nil {
-		return err
-	}
-	log.Println("delete user_video successfully:", deletedUserVideos)
-	return nil
+	return DB.Where("user_id = ? AND video_id = ?", userID, videoID).Delete(&UserVideo{}).Error
 }
 
 func userInsert(email, name, platformID string) error {
-	supabase := supa.CreateClient(SupabaseURL, SupabaseAPIKey)
-
 	newUser := User{
-		ID:          uuid.New().String(),
-		Email:       email,
-		Name:        name,
-		Platform_id: platformID,
-		Created_at:  time.Now(),
+		ID:         uuid.New().String(),
+		Email:      email,
+		Name:       name,
+		PlatformID: platformID,
+		CreatedAt:  time.Now(),
 	}
-
-	var insertedUsers []User
-	err := supabase.DB.From("users").
-		Insert(newUser).
-		Execute(&insertedUsers)
-
-	if err != nil {
-		return err
-	}
-	log.Println("insert user successfully:", insertedUsers)
-	return nil
+	return DB.Create(&newUser).Error
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
@@ -709,31 +647,18 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// generateJWT 產生 JWT Token
 func generateJWT(userInfo map[string]interface{}) (string, error) {
-	// 設定 Token 過期時間
 	expirationTime := time.Now().Add(24 * time.Hour)
-
-	// 建立 claims
 	claims := jwt.MapClaims{
 		"email":   userInfo["email"].(string),
 		"user_id": userInfo["id"].(string),
 		"image":   userInfo["picture"].(string),
 		"name":    userInfo["name"].(string),
-		"exp":     expirationTime.Unix(), // 過期時間
-		"iat":     time.Now().Unix(),     // 發行時間
+		"exp":     expirationTime.Unix(),
+		"iat":     time.Now().Unix(),
 	}
-
-	// 產生 Token
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	// 簽名 Token
-	signedToken, err := token.SignedString(jwtSecret)
-	if err != nil {
-		return "", err
-	}
-
-	return signedToken, nil
+	return token.SignedString(jwtSecret)
 }
 
 func getCurrentUserHandler(w http.ResponseWriter, r *http.Request) {
@@ -746,11 +671,9 @@ func getCurrentUserHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// CORS Middleware
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-
 		allowedOrigins := map[string]bool{
 			"https://sportaii.com": true,
 		}
@@ -761,7 +684,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Origin")
 			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range")
-			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+			w.Header().Set("Access-Control-Max-Age", "86400")
 		}
 
 		if r.Method == "OPTIONS" {
@@ -773,8 +696,6 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// Remove the separate handleOptions function as it's now handled in the middleware
-
 func main() {
 	router := mux.NewRouter()
 
@@ -784,11 +705,14 @@ func main() {
 	protectedRoutes := router.PathPrefix("/").Subrouter()
 	protectedRoutes.Use(jwtMiddleware)
 
-	// Remove separate OPTIONS handlers from route definitions
+	// 現有路由
 	protectedRoutes.HandleFunc("/api/user", getCurrentUserHandler).Methods("GET", "OPTIONS")
 	protectedRoutes.HandleFunc("/upload", uploadFileHandler).Methods("POST", "OPTIONS")
 	protectedRoutes.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET", "OPTIONS")
 	protectedRoutes.HandleFunc("/video/{videoID}", deleteFileHandler).Methods("DELETE", "OPTIONS")
+
+	// 新增的路由
+	protectedRoutes.HandleFunc("/video/{videoID}/highlights", getVideoHighlightsHandler).Methods("GET", "OPTIONS")
 
 	router.HandleFunc("/asset/logo", logoHandler).Methods("GET")
 	router.HandleFunc("/auth/google/login", loginHandler).Methods("GET")
