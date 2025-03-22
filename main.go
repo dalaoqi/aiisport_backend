@@ -145,11 +145,6 @@ func init() {
 		log.Fatalf("無法連接到資料庫: %v", err)
 	}
 
-	// 自動遷移資料庫結構
-	if err := DB.AutoMigrate(&User{}, &Video{}, &UserVideo{}, &Highlight{}, &HighlightType{}); err != nil {
-		log.Fatalf("資料庫遷移失敗: %v", err)
-	}
-
 	oauthConfig = &oauth2.Config{
 		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
