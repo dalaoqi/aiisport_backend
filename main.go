@@ -164,6 +164,13 @@ func getVideoHighlightsHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	videoID := vars["videoID"]
 
+	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
+	if err != nil {
+		log.Fatalf("cannot initalize client: %v", err)
+		http.Error(w, "Error initializing client", http.StatusInternalServerError)
+		return
+	}
+
 	var video Video
 	if err := DB.Where("id = ?", videoID).First(&video).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -193,11 +200,24 @@ func getVideoHighlightsHandler(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
+		highlightSignedUrlResp, err := supabase.Storage.CreateSignedUrl(SupabaseVideosBucket, strings.TrimPrefix(h.HighlightPath, fmt.Sprintf("%s/%s/", SupabaseURL, SupabaseVideosBucket)), 86400)
+		if err != nil {
+			log.Fatalf("Failed to get highlight signed URL: %+v", err)
+			http.Error(w, "Error getting highlight signed URL", http.StatusInternalServerError)
+			return
+		}
+
+		thumbnailSignedUrlResp, err := supabase.Storage.CreateSignedUrl(SupabaseThumbnailsBucket, strings.TrimPrefix(h.ThumbnailPath, fmt.Sprintf("%s/%s/", SupabaseURL, SupabaseThumbnailsBucket)), 86400)
+		if err != nil {
+			log.Fatalf("Failed to get thumbnail signed URL: %+v", err)
+			http.Error(w, "Error getting thumbnail signed URL", http.StatusInternalServerError)
+			return
+		}
 		response = append(response, HighlightResponse{
 			ID:             h.ID,
 			VideoID:        h.VideoID,
-			HighlightPath:  h.HighlightPath,
-			ThumbnailPath:  h.ThumbnailPath,
+			HighlightPath:  highlightSignedUrlResp.SignedURL,
+			ThumbnailPath:  thumbnailSignedUrlResp.SignedURL,
 			HighlightTypes: highlightTypes,
 			Description:    h.Description,
 			CreatedAt:      h.CreatedAt.Format(time.RFC3339),
