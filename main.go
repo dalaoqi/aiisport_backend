@@ -76,16 +76,15 @@ type UserVideo struct {
 }
 
 type Highlight struct {
-	ID              string        `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	VideoID         string        `gorm:"type:uuid;not null" json:"video_id"`
-	HighlightTypeID int           `gorm:"not null" json:"highlight_type_id"`
-	StartTime       *int          `gorm:"null" json:"start_time"`
-	EndTime         *int          `gorm:"null" json:"end_time"`
-	Description     *string       `gorm:"type:text;null" json:"description"`
-	CreatedAt       time.Time     `gorm:"default:now()" json:"created_at"`
-	DeletedAt       time.Time     `gorm:"default:'0001-01-01 00:00:00+00'" json:"deleted_at"`
-	Video           Video         `gorm:"foreignKey:VideoID;references:ID;constraint:OnDelete:CASCADE"`
-	HighlightType   HighlightType `gorm:"foreignKey:HighlightTypeID;references:ID;constraint:OnDelete:RESTRICT"`
+	ID          string          `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	VideoID     string          `gorm:"type:uuid;not null" json:"video_id"`
+	StartTime   *int            `gorm:"null" json:"start_time"`
+	EndTime     *int            `gorm:"null" json:"end_time"`
+	Description *string         `gorm:"type:text;null" json:"description"`
+	CreatedAt   time.Time       `gorm:"default:now()" json:"created_at"`
+	DeletedAt   time.Time       `gorm:"default:'0001-01-01 00:00:00+00'" json:"deleted_at"`
+	Video       Video           `gorm:"foreignKey:VideoID;references:ID;constraint:OnDelete:CASCADE"`
+	Types       []HighlightType `gorm:"many2many:highlight_highlight_types;"`
 }
 
 type HighlightType struct {
@@ -96,15 +95,26 @@ type HighlightType struct {
 	DeletedAt   time.Time `gorm:"default:'0001-01-01 00:00:00+00'" json:"deleted_at"`
 }
 
+type HighlightHighlightType struct {
+	HighlightID     string    `gorm:"type:uuid;primaryKey" json:"highlight_id"`
+	HighlightTypeID int       `gorm:"primaryKey" json:"highlight_type_id"`
+	CreatedAt       time.Time `gorm:"default:now()" json:"created_at"`
+}
+
 type HighlightResponse struct {
-	ID              string  `json:"id"`
-	VideoID         string  `json:"video_id"`
-	HighlightTypeID int     `json:"highlight_type_id"`
-	HighlightType   string  `json:"highlight_type"` // 從 HighlightType 表中獲取名稱
-	StartTime       *int    `json:"start_time"`
-	EndTime         *int    `json:"end_time"`
-	Description     *string `json:"description"`
-	CreatedAt       string  `json:"created_at"`
+	ID             string              `json:"id"`
+	VideoID        string              `json:"video_id"`
+	HighlightTypes []HighlightTypeData `json:"highlight_types"`
+	StartTime      *int                `json:"start_time"`
+	EndTime        *int                `json:"end_time"`
+	Description    *string             `json:"description"`
+	CreatedAt      string              `json:"created_at"`
+}
+
+type HighlightTypeData struct {
+	ID          int     `json:"id"`
+	Name        string  `json:"name"`
+	Description *string `json:"description"`
 }
 
 func init() {
@@ -167,9 +177,9 @@ func getVideoHighlightsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 查詢該 video 的所有 highlights，並關聯 highlight_types 表
+	// 查詢該 video 的所有 highlights，並預載入相關的 HighlightTypes
 	var highlights []Highlight
-	if err := DB.Preload("HighlightType").Where("video_id = ?", videoID).Find(&highlights).Error; err != nil {
+	if err := DB.Preload("Types").Where("video_id = ?", videoID).Find(&highlights).Error; err != nil {
 		log.Printf("Failed to get highlights: %v", err)
 		http.Error(w, "Error retrieving highlights", http.StatusInternalServerError)
 		return
@@ -178,15 +188,23 @@ func getVideoHighlightsHandler(w http.ResponseWriter, r *http.Request) {
 	// 轉換為回應結構
 	var response []HighlightResponse
 	for _, h := range highlights {
+		var highlightTypes []HighlightTypeData
+		for _, ht := range h.Types {
+			highlightTypes = append(highlightTypes, HighlightTypeData{
+				ID:          ht.ID,
+				Name:        ht.Name,
+				Description: ht.Description,
+			})
+		}
+
 		response = append(response, HighlightResponse{
-			ID:              h.ID,
-			VideoID:         h.VideoID,
-			HighlightTypeID: h.HighlightTypeID,
-			HighlightType:   h.HighlightType.Name, // 從關聯的 HighlightType 中獲取名稱
-			StartTime:       h.StartTime,
-			EndTime:         h.EndTime,
-			Description:     h.Description,
-			CreatedAt:       h.CreatedAt.Format(time.RFC3339), // 格式化時間
+			ID:             h.ID,
+			VideoID:        h.VideoID,
+			HighlightTypes: highlightTypes,
+			StartTime:      h.StartTime,
+			EndTime:        h.EndTime,
+			Description:    h.Description,
+			CreatedAt:      h.CreatedAt.Format(time.RFC3339),
 		})
 	}
 
