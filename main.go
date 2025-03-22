@@ -276,7 +276,7 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 	// 如果不是 .mov，轉檔為 .mov
 	if !isMov {
 		finalFileName = strings.TrimSuffix(hashedFileName, filepath.Ext(hashedFileName)) + ".mov"
-		finalVideoPath, err := ConvertToMov(tempVideoPath, "uploads")
+		finalVideoPath, err := convertVideoToMOV(tempVideoPath, "uploads")
 		if err != nil {
 			http.Error(w, "Error converting video to .mov", http.StatusInternalServerError)
 			return
@@ -765,35 +765,39 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// ConvertToMov 將輸入的影片檔案轉檔為 .mov 格式
-// inputPath: 輸入檔案的路徑
-// outputDir: 輸出檔案的目錄（不含檔案名）
-// 返回值: 轉檔後的檔案路徑和可能的錯誤
-func ConvertToMov(inputPath, outputDir string) (string, error) {
-	// 確保輸出目錄存在
-	if err := os.MkdirAll(outputDir, os.ModePerm); err != nil {
-		return "", fmt.Errorf("failed to create output directory: %v", err)
+// Convert input video file to .mov format
+// inputPath: Path to input video file
+// outputDir: Directory to output converted file (without filename)
+// Returns: Path to converted file and any error
+func convertVideoToMOV(inputPath string, outputDir string) (string, error) {
+	// Ensure output directory exists
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return "", fmt.Errorf("cannot create output directory: %v", err)
 	}
 
-	// 生成輸出檔案名稱（將副檔名替換為 .mov）
-	baseName := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))
-	outputFileName := baseName + ".mov"
+	// Get input file name (without path)
+	inputFileName := filepath.Base(inputPath)
+	// Construct output file path with .mov extension
+	outputFileName := inputFileName[:len(inputFileName)-len(filepath.Ext(inputFileName))] + ".mov"
 	outputPath := filepath.Join(outputDir, outputFileName)
 
-	// 使用 FFmpeg 執行轉檔
+	// Construct FFmpeg command
 	cmd := exec.Command(
 		"ffmpeg",
-		"-i", inputPath, // 輸入檔案
-		"-c:v", "copy", // 複製影片編解碼器（快速轉檔）
-		"-c:a", "copy", // 複製音訊編解碼器
-		"-f", "mov", // 指定輸出格式為 .mov
-		outputPath, // 輸出檔案路徑
+		"-i", inputPath, // Input file
+		"-c:v", "libx264", // Video encoding to H.264
+		"-c:a", "aac", // Audio encoding to AAC
+		"-preset", "medium", // Encoding speed and quality balance
+		"-movflags", "faststart", // Optimize MOV file for fast playback
+		"-y",       // Automatically overwrite output file
+		outputPath, // Output file path
 	)
 
-	// 執行命令並檢查錯誤
-	if err := cmd.Run(); err != nil {
-		log.Printf("Error converting %s to .mov: %v", inputPath, err)
-		return "", fmt.Errorf("failed to convert to .mov: %v", err)
+	// Run command and capture any error output
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("conversion failed: %v", err)
 	}
 
 	return outputPath, nil
