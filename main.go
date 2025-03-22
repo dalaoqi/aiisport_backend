@@ -76,15 +76,15 @@ type UserVideo struct {
 }
 
 type Highlight struct {
-	ID          string          `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	VideoID     string          `gorm:"type:uuid;not null" json:"video_id"`
-	StartTime   *int            `gorm:"null" json:"start_time"`
-	EndTime     *int            `gorm:"null" json:"end_time"`
-	Description *string         `gorm:"type:text;null" json:"description"`
-	CreatedAt   time.Time       `gorm:"default:now()" json:"created_at"`
-	DeletedAt   time.Time       `gorm:"default:'0001-01-01 00:00:00+00'" json:"deleted_at"`
-	Video       Video           `gorm:"foreignKey:VideoID;references:ID;constraint:OnDelete:CASCADE"`
-	Types       []HighlightType `gorm:"many2many:highlight_highlight_types;"`
+	ID            string          `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	VideoID       string          `gorm:"type:uuid;not null" json:"video_id"`
+	HighlightPath string          `gorm:"type:text;not null" json:"highlight_path"` // 新增
+	ThumbnailPath string          `gorm:"type:text;not null" json:"thumbnail_path"` // 新增
+	Description   *string         `gorm:"type:text;null" json:"description"`
+	CreatedAt     time.Time       `gorm:"default:now()" json:"created_at"`
+	DeletedAt     time.Time       `gorm:"default:'0001-01-01 00:00:00+00'" json:"deleted_at"`
+	Video         Video           `gorm:"foreignKey:VideoID;references:ID;constraint:OnDelete:CASCADE"`
+	Types         []HighlightType `gorm:"many2many:highlight_highlight_types;"` // 多對多關聯
 }
 
 type HighlightType struct {
@@ -104,9 +104,9 @@ type HighlightHighlightType struct {
 type HighlightResponse struct {
 	ID             string              `json:"id"`
 	VideoID        string              `json:"video_id"`
+	HighlightPath  string              `json:"highlight_path"`
+	ThumbnailPath  string              `json:"thumbnail_path"`
 	HighlightTypes []HighlightTypeData `json:"highlight_types"`
-	StartTime      *int                `json:"start_time"`
-	EndTime        *int                `json:"end_time"`
 	Description    *string             `json:"description"`
 	CreatedAt      string              `json:"created_at"`
 }
@@ -161,11 +161,9 @@ func init() {
 }
 
 func getVideoHighlightsHandler(w http.ResponseWriter, r *http.Request) {
-	// 從 URL 參數中獲取 videoID
 	vars := mux.Vars(r)
 	videoID := vars["videoID"]
 
-	// 檢查 video 是否存在
 	var video Video
 	if err := DB.Where("id = ?", videoID).First(&video).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -177,7 +175,6 @@ func getVideoHighlightsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 查詢該 video 的所有 highlights，並預載入相關的 HighlightTypes
 	var highlights []Highlight
 	if err := DB.Preload("Types").Where("video_id = ?", videoID).Find(&highlights).Error; err != nil {
 		log.Printf("Failed to get highlights: %v", err)
@@ -185,7 +182,6 @@ func getVideoHighlightsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 轉換為回應結構
 	var response []HighlightResponse
 	for _, h := range highlights {
 		var highlightTypes []HighlightTypeData
@@ -200,15 +196,14 @@ func getVideoHighlightsHandler(w http.ResponseWriter, r *http.Request) {
 		response = append(response, HighlightResponse{
 			ID:             h.ID,
 			VideoID:        h.VideoID,
+			HighlightPath:  h.HighlightPath,
+			ThumbnailPath:  h.ThumbnailPath,
 			HighlightTypes: highlightTypes,
-			StartTime:      h.StartTime,
-			EndTime:        h.EndTime,
 			Description:    h.Description,
 			CreatedAt:      h.CreatedAt.Format(time.RFC3339),
 		})
 	}
 
-	// 回傳 JSON 回應
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
