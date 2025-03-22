@@ -243,8 +243,13 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 取得原始檔名並生成 Hash
 	originalFileName := filepath.Base(handler.Filename)
-	hashedFileName := generateHashedFileName(originalFileName) // 原始 hashed 名稱保留副檔名
+	hashedFileName := generateHashedFileName(originalFileName) // 包含原始副檔名
 	tempVideoPath := fmt.Sprintf("uploads/%s", hashedFileName) // 臨時儲存原始檔案
+
+	// 檢查副檔名是否為 .mov
+	isMov := strings.ToLower(filepath.Ext(originalFileName)) == ".mov"
+	finalVideoPath := tempVideoPath
+	finalFileName := hashedFileName
 
 	// 儲存影片至本地
 	os.MkdirAll("uploads", os.ModePerm)
@@ -261,33 +266,35 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 使用 FFmpeg 將影片轉檔為 .mov
-	movFileName := strings.TrimSuffix(hashedFileName, filepath.Ext(hashedFileName)) + ".mov"
-	movVideoPath := fmt.Sprintf("uploads/%s", movFileName)
-	cmd := exec.Command("ffmpeg", "-i", tempVideoPath, "-c:v", "copy", "-c:a", "copy", "-f", "mov", movVideoPath)
-	if err := cmd.Run(); err != nil {
-		log.Printf("Error converting video to .mov: %v", err)
-		http.Error(w, "Error converting video to .mov", http.StatusInternalServerError)
-		return
+	// 如果不是 .mov，轉檔為 .mov
+	if !isMov {
+		finalFileName = strings.TrimSuffix(hashedFileName, filepath.Ext(hashedFileName)) + ".mov"
+		finalVideoPath = fmt.Sprintf("uploads/%s", finalFileName)
+		cmd := exec.Command("ffmpeg", "-i", tempVideoPath, "-c:v", "copy", "-c:a", "copy", "-f", "mov", finalVideoPath)
+		if err := cmd.Run(); err != nil {
+			log.Printf("Error converting video to .mov: %v", err)
+			http.Error(w, "Error converting video to .mov", http.StatusInternalServerError)
+			return
+		}
+		defer os.Remove(finalVideoPath) // 清理轉檔後的 .mov 檔案
 	}
-	defer os.Remove(movVideoPath) // 清理轉檔後的 .mov 檔案
 
 	// 使用 FFmpeg 生成縮圖
 	thumbnailPath := strings.TrimSuffix(tempVideoPath, filepath.Ext(tempVideoPath)) + ".jpg"
-	cmd = exec.Command("ffmpeg", "-i", movVideoPath, "-ss", "00:00:02", "-vframes", "1", "-q:v", "2", thumbnailPath)
+	cmd := exec.Command("ffmpeg", "-i", finalVideoPath, "-ss", "00:00:02", "-vframes", "1", "-q:v", "2", thumbnailPath)
 	if err := cmd.Run(); err != nil {
 		log.Printf("Error generating thumbnail: %v", err)
 		http.Error(w, "Error generating thumbnail", http.StatusInternalServerError)
 		return
 	}
 
-	// 上傳轉檔後的 .mov 影片和縮圖到 Supabase
-	uploadToSupabase(SupabaseVideosBucket, movVideoPath, movFileName, "video/quicktime") // 使用 .mov 的 MIME 類型
+	// 上傳影片和縮圖到 Supabase
+	uploadToSupabase(SupabaseVideosBucket, finalVideoPath, finalFileName, "video/quicktime") // 使用 .mov 的 MIME 類型
 	thumbnailName := strings.TrimSuffix(hashedFileName, filepath.Ext(hashedFileName)) + ".jpg"
 	uploadToSupabase(SupabaseThumbnailsBucket, thumbnailPath, thumbnailName, "image/jpeg")
 
 	// 構建 Supabase 中的 video_path 和 thumbnail_path
-	videoURL := fmt.Sprintf("%s/%s/%s", SupabaseURL, SupabaseVideosBucket, movFileName)
+	videoURL := fmt.Sprintf("%s/%s/%s", SupabaseURL, SupabaseVideosBucket, finalFileName)
 	thumbnailURL := fmt.Sprintf("%s/%s/%s", SupabaseURL, SupabaseThumbnailsBucket, thumbnailName)
 
 	// 使用 GORM 插入影片資料
@@ -318,7 +325,7 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(fmt.Sprintf("File and thumbnail uploaded successfully: %s", movFileName)))
+	w.Write([]byte(fmt.Sprintf("File and thumbnail uploaded successfully: %s", finalFileName)))
 }
 
 // 根據檔名和當前時間生成 Hash
