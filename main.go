@@ -1258,6 +1258,13 @@ func listUserMergedVideosHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
+	if err != nil {
+		log.Printf("Failed to initialize Supabase client [userID: %s, error: %v]", userID, err)
+		http.Error(w, "Error initializing client", http.StatusInternalServerError)
+		return
+	}
+
 	// Get pagination parameters
 	pageStr := r.URL.Query().Get("page")
 	limitStr := r.URL.Query().Get("limit")
@@ -1302,11 +1309,23 @@ func listUserMergedVideosHandler(w http.ResponseWriter, r *http.Request) {
 	// Format response
 	var response []MergedVideoResponse
 	for _, mv := range mergedVideos {
+		videoSignedURL, err := supabase.Storage.CreateSignedUrl(SupabaseMergedHighlightsBucket, filepath.Base(mv.VideoPath), 86400)
+		if err != nil {
+			log.Printf("Failed to create video signed URL [userID: %s, error: %v]", userID, err)
+			http.Error(w, "Error generating signed URL", http.StatusInternalServerError)
+			return
+		}
+		thumbnailSignedURL, err := supabase.Storage.CreateSignedUrl(SupabaseMergedThumbnailsBucket, filepath.Base(mv.ThumbnailPath), 86400)
+		if err != nil {
+			log.Printf("Failed to create thumbnail signed URL [userID: %s, error: %v]", userID, err)
+			http.Error(w, "Error generating signed URL", http.StatusInternalServerError)
+			return
+		}
 		response = append(response, MergedVideoResponse{
 			ID:            mv.ID,
 			Name:          mv.Name,
-			VideoPath:     mv.VideoPath,
-			ThumbnailPath: mv.ThumbnailPath,
+			VideoPath:     videoSignedURL.SignedURL,
+			ThumbnailPath: thumbnailSignedURL.SignedURL,
 			Description:   mv.Description,
 			Status:        mv.Status,
 			CreatedAt:     mv.CreatedAt.Format(time.RFC3339),
