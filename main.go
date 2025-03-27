@@ -20,6 +20,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/hibiken/asynq"
 	"github.com/joho/godotenv"
 	"github.com/supabase-community/supabase-go"
 	"golang.org/x/oauth2"
@@ -35,15 +36,21 @@ var (
 	StorageEndpoint = "/storage/v1/object"
 	oauthConfig     *oauth2.Config
 	jwtSecret       = []byte(os.Getenv("JWT_SECRET"))
-	DB              *gorm.DB // GORM 資料庫實例
+	DB              *gorm.DB // GORM database instance
+
+	taskClient *asynq.Client
+	taskServer *asynq.Server
 )
 
 const (
-	SupabaseVideosBucket     = "videos"
-	SupabaseThumbnailsBucket = "thumbnails"
+	SupabaseVideosBucket           = "videos"
+	SupabaseThumbnailsBucket       = "thumbnails"
+	SupabaseHighlightsBucket       = "highlights"
+	SupabaseMergedHighlightsBucket = "merged-highlights"
+	SupabaseMergedThumbnailsBucket = "merged-thumbnails"
 )
 
-// Claims 結構，用來儲存 JWT 內的 Payload
+// Claims struct for storing JWT payload
 type Claims struct {
 	Email    string `json:"email"`
 	UserID   string `json:"user_id"`
@@ -117,32 +124,56 @@ type HighlightTypeData struct {
 	Description *string `json:"description"`
 }
 
+// Store merged video information
+type MergedVideo struct {
+	ID            string    `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	Name          string    `gorm:"type:text;not null" json:"name"`
+	VideoPath     string    `gorm:"type:text;not null" json:"video_path"`
+	ThumbnailPath string    `gorm:"type:text;not null" json:"thumbnail_path"`
+	Description   *string   `gorm:"type:text;null" json:"description"`
+	UserID        string    `gorm:"type:uuid;not null" json:"user_id"`
+	User          User      `gorm:"foreignKey:UserID;references:ID;constraint:OnDelete:CASCADE"`
+	Status        string    `gorm:"type:text;not null;default:'queued'" json:"status"` // 新增狀態欄位
+	CreatedAt     time.Time `gorm:"default:now()" json:"created_at"`
+	UpdatedAt     time.Time `gorm:"default:now()" json:"updated_at"` // 新增更新時間
+	DeletedAt     time.Time `gorm:"default:'0001-01-01 00:00:00+00'" json:"deleted_at"`
+}
+
+// Store association between merged video and original highlights
+type MergedVideoHighlight struct {
+	MergedVideoID string      `gorm:"type:uuid;primaryKey" json:"merged_video_id"`
+	HighlightID   string      `gorm:"type:uuid;primaryKey" json:"highlight_id"`
+	MergedVideo   MergedVideo `gorm:"foreignKey:MergedVideoID;references:ID;constraint:OnDelete:CASCADE"`
+	Highlight     Highlight   `gorm:"foreignKey:HighlightID;references:ID;constraint:OnDelete:CASCADE"`
+	CreatedAt     time.Time   `gorm:"default:now()" json:"created_at"`
+}
+
 func init() {
-	// 讀取 .env 檔案
+	// Load .env file
 	if err := godotenv.Load(); err != nil {
-		log.Println("未找到 .env 檔案，將嘗試使用系統環境變數")
+		log.Println("No .env file found, trying to use system environment variables")
 	}
 
-	// 從環境變數中讀取必要設定
+	// Load necessary settings from environment variables
 	SupabaseURL = os.Getenv("SUPABASE_URL")
 	SupabaseAPIKey = os.Getenv("SUPABASE_API_KEY")
 	Port = os.Getenv("PORT")
 
-	// 檢查必要環境變數是否存在
+	// Check if necessary environment variables are set
 	requiredEnv := []string{"SUPABASE_URL", "SUPABASE_API_KEY", "PORT", "DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT"}
 	for _, env := range requiredEnv {
 		if os.Getenv(env) == "" {
-			log.Fatalf("環境變數 %s 未設定", env)
+			log.Fatalf("Environment variable %s is not set", env)
 		}
 	}
 
-	// 初始化 GORM 資料庫連接
+	// Initialize GORM database connection
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=UTC",
 		os.Getenv("DB_HOST"), os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME"), os.Getenv("DB_PORT"))
 	var err error
 	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		log.Fatalf("無法連接到資料庫: %v", err)
+		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
 	oauthConfig = &oauth2.Config{
@@ -153,6 +184,27 @@ func init() {
 		Endpoint:     google.Endpoint,
 	}
 	log.Printf("OAuth Config: %v", oauthConfig.RedirectURL)
+
+	initTaskSystem()
+}
+
+// Initialize Redis and Asynq
+func initTaskSystem() {
+	taskClient = asynq.NewClient(asynq.RedisClientOpt{
+		Addr: "localhost:6379",
+	})
+
+	taskServer = asynq.NewServer(
+		asynq.RedisClientOpt{Addr: "localhost:6379"},
+		asynq.Config{
+			Concurrency: 10,
+			Queues: map[string]int{
+				"critical": 6,
+				"default":  3,
+				"low":      1,
+			},
+		},
+	)
 }
 
 func getVideoHighlightsHandler(w http.ResponseWriter, r *http.Request) {
@@ -161,7 +213,7 @@ func getVideoHighlightsHandler(w http.ResponseWriter, r *http.Request) {
 
 	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
 	if err != nil {
-		log.Fatalf("cannot initalize client: %v", err)
+		log.Fatalf("Failed to initialize client: %v", err)
 		http.Error(w, "Error initializing client", http.StatusInternalServerError)
 		return
 	}
@@ -226,9 +278,9 @@ func getVideoHighlightsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// 上傳影片並生成縮圖
+// Upload file and generate thumbnail
 func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
-	err := r.ParseMultipartForm(100 << 20) // 限制上傳檔案大小 100 MB
+	err := r.ParseMultipartForm(100 << 20) // Limit upload file size to 100 MB
 	if err != nil {
 		http.Error(w, "Error parsing form data", http.StatusBadRequest)
 		return
@@ -241,7 +293,7 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// 創建 uploads 目錄
+	// Create uploads directory
 	if _, err := os.Stat("uploads"); os.IsNotExist(err) {
 		if err := os.Mkdir("uploads", 0755); err != nil {
 			http.Error(w, "Error creating uploads directory", http.StatusInternalServerError)
@@ -249,31 +301,31 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 取得原始檔名並生成 Hash
+	// Get original file name and generate hash
 	originalFileName := filepath.Base(handler.Filename)
-	hashedFileName := generateHashedFileName(originalFileName) // 包含原始副檔名
-	tempVideoPath := fmt.Sprintf("uploads/%s", hashedFileName) // 臨時儲存原始檔案
+	hashedFileName := generateHashedFileName(originalFileName) // Includes original file extension
+	tempVideoPath := fmt.Sprintf("uploads/%s", hashedFileName) // Temporary storage for original file
 
-	// 檢查副檔名是否為 .mov
+	// Check if file extension is .mov
 	isMov := strings.ToLower(filepath.Ext(originalFileName)) == ".mov"
 	finalVideoPath := tempVideoPath
 	finalFileName := hashedFileName
 
-	// 儲存影片至本地
+	// Save video to local storage
 	outFile, err := os.Create(tempVideoPath)
 	if err != nil {
 		http.Error(w, "Error saving the file", http.StatusInternalServerError)
 		return
 	}
 	defer outFile.Close()
-	defer os.Remove(tempVideoPath) // 清理臨時原始檔案
+	defer os.Remove(tempVideoPath) // Clean up temporary original file
 
 	if _, err := io.Copy(outFile, file); err != nil {
 		http.Error(w, "Error writing the file", http.StatusInternalServerError)
 		return
 	}
 
-	// 如果不是 .mov，轉檔為 .mov
+	// If not .mov, convert to .mov
 	if !isMov {
 		finalFileName = strings.TrimSuffix(hashedFileName, filepath.Ext(hashedFileName)) + ".mov"
 		finalVideoPath, err := convertVideoToMOV(tempVideoPath, "uploads")
@@ -281,10 +333,10 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Error converting video to .mov", http.StatusInternalServerError)
 			return
 		}
-		defer os.Remove(finalVideoPath) // 清理轉檔後的 .mov 檔案
+		defer os.Remove(finalVideoPath) // Clean up converted .mov file
 	}
 
-	// 使用 FFmpeg 生成縮圖
+	// Use FFmpeg to generate thumbnail
 	thumbnailPath := strings.TrimSuffix(tempVideoPath, filepath.Ext(tempVideoPath)) + ".jpg"
 	cmd := exec.Command("ffmpeg", "-i", finalVideoPath, "-ss", "00:00:02", "-vframes", "1", "-q:v", "2", thumbnailPath)
 	if err := cmd.Run(); err != nil {
@@ -293,16 +345,16 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 上傳影片和縮圖到 Supabase
-	uploadToSupabase(SupabaseVideosBucket, finalVideoPath, finalFileName, "video/quicktime") // 使用 .mov 的 MIME 類型
+	// Upload video and thumbnail to Supabase
+	uploadToSupabase(SupabaseVideosBucket, finalVideoPath, finalFileName, "video/quicktime")
 	thumbnailName := strings.TrimSuffix(hashedFileName, filepath.Ext(hashedFileName)) + ".jpg"
 	uploadToSupabase(SupabaseThumbnailsBucket, thumbnailPath, thumbnailName, "image/jpeg")
 
-	// 構建 Supabase 中的 video_path 和 thumbnail_path
+	// Construct Supabase video_path and thumbnail_path
 	videoURL := fmt.Sprintf("%s/%s/%s", SupabaseURL, SupabaseVideosBucket, finalFileName)
 	thumbnailURL := fmt.Sprintf("%s/%s/%s", SupabaseURL, SupabaseThumbnailsBucket, thumbnailName)
 
-	// 使用 GORM 插入影片資料
+	// Use GORM to insert video data
 	newVideo := Video{
 		ID:            uuid.New().String(),
 		Name:          originalFileName,
@@ -316,7 +368,7 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 插入 user_videos 關聯
+	// Insert user_videos association
 	userID := r.Context().Value("userID").(string)
 	newUserVideo := UserVideo{
 		ID:      uuid.New().String(),
@@ -333,7 +385,7 @@ func uploadFileHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(fmt.Sprintf("File and thumbnail uploaded successfully: %s", finalFileName)))
 }
 
-// 根據檔名和當前時間生成 Hash
+// Generate hashed file name based on original file name and current time
 func generateHashedFileName(fileName string) string {
 	currentTime := fmt.Sprintf("%d", time.Now().UnixNano())
 	hashInput := fileName + currentTime
@@ -343,26 +395,26 @@ func generateHashedFileName(fileName string) string {
 	return strings.ToLower(hashedFileName)
 }
 
-// 上傳檔案到 Supabase Storage（未改動，因為這部分與資料庫無關）
-func uploadToSupabase(bucket, filePath, fileName, contentType string) {
+// Upload file to Supabase Storage (unchanged, as it's unrelated to database)
+func uploadToSupabase(bucket, filePath, fileName, contentType string) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		log.Printf("Error opening file: %v", err)
-		return
+		return err
 	}
 	defer file.Close()
 
 	buffer := bytes.NewBuffer(nil)
 	if _, err := io.Copy(buffer, file); err != nil {
 		log.Printf("Error reading file: %v", err)
-		return
+		return err
 	}
 
 	uploadURL := fmt.Sprintf("%s%s/%s/%s", SupabaseURL, StorageEndpoint, bucket, fileName)
 	req, err := http.NewRequest("POST", uploadURL, buffer)
 	if err != nil {
 		log.Printf("Error creating request: %v", err)
-		return
+		return err
 	}
 
 	req.Header.Set("Authorization", "Bearer "+SupabaseAPIKey)
@@ -373,14 +425,15 @@ func uploadToSupabase(bucket, filePath, fileName, contentType string) {
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("Error uploading to Supabase: %v", err)
-		return
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
-		log.Printf("Error response from Supabase: %s", string(body))
+		return fmt.Errorf("error response from Supabase: %s", string(body))
 	}
+	return nil
 }
 
 type thumbnailResponse struct {
@@ -408,7 +461,7 @@ func listThumbnailsHandler(w http.ResponseWriter, r *http.Request) {
 
 	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
 	if err != nil {
-		log.Fatalf("cannot initalize client: %v", err)
+		log.Fatalf("Failed to initialize client: %v", err)
 		http.Error(w, "Error initializing client", http.StatusInternalServerError)
 		return
 	}
@@ -478,7 +531,7 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 刪除 Supabase Storage 中的檔案
+	// Delete file from Supabase Storage
 	err = deleteFromSupabase(SupabaseVideosBucket, strings.TrimPrefix(video.VideoPath, fmt.Sprintf("%s/videos/", SupabaseURL)))
 	if err != nil {
 		http.Error(w, "Error deleting video", http.StatusInternalServerError)
@@ -490,7 +543,7 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 使用 GORM 刪除資料庫記錄
+	// Use GORM to delete database record
 	if err := DB.Where("id = ?", videoID).Delete(&Video{}).Error; err != nil {
 		log.Printf("Failed to delete video: %v", err)
 		http.Error(w, "Error deleting record from database", http.StatusInternalServerError)
@@ -506,9 +559,8 @@ func deleteFileHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(fmt.Sprintf("Video and thumbnail deleted successfully: %s", video.Name)))
 }
 
-// 從 Supabase Storage 刪除檔案（未改動）
+// Delete file from Supabase Storage
 func deleteFromSupabase(bucket, fileName string) error {
-	// 這裡假設仍使用 Supabase Storage，保留原有邏輯
 	uploadURL := fmt.Sprintf("%s%s/%s/%s", SupabaseURL, StorageEndpoint, bucket, fileName)
 	req, err := http.NewRequest("DELETE", uploadURL, nil)
 	if err != nil {
@@ -555,13 +607,13 @@ func jwtMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			http.Error(w, "未提供授權 Token", http.StatusUnauthorized)
+			http.Error(w, "No authorization token provided", http.StatusUnauthorized)
 			return
 		}
 
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 		if tokenString == authHeader {
-			http.Error(w, "無效的 Token 格式", http.StatusUnauthorized)
+			http.Error(w, "Invalid token format", http.StatusUnauthorized)
 			return
 		}
 
@@ -570,7 +622,7 @@ func jwtMiddleware(next http.Handler) http.Handler {
 			return jwtSecret, nil
 		})
 		if err != nil || !token.Valid {
-			http.Error(w, "無效的 Token", http.StatusUnauthorized)
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
 
@@ -803,6 +855,382 @@ func convertVideoToMOV(inputPath string, outputDir string) (string, error) {
 	return outputPath, nil
 }
 
+type MergeRequest struct {
+	HighlightIds []string `json:"highlightIds"`
+	Name         string   `json:"name"`
+	Description  *string  `json:"description,omitempty"`
+}
+
+type MergeResponse struct {
+	TaskID string `json:"taskId"`
+	Status string `json:"status"`
+}
+
+type MergeTaskPayload struct {
+	HighlightIds  []string `json:"highlightIds"`
+	UserID        string   `json:"userId"`
+	Name          string   `json:"name"`
+	Description   *string  `json:"description"`
+	MergedVideoID string   `json:"mergedVideoId"`
+}
+
+func mergeHighlightsHandler(w http.ResponseWriter, r *http.Request) {
+	// 1. Validate request
+	userID := r.Context().Value("userID").(string)
+	log.Printf("Starting video merge request [userID: %s]", userID)
+
+	if userID == "" {
+		log.Printf("Unauthorized request [userID empty]")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req MergeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("Failed to parse request [userID: %s, error: %v]", userID, err)
+		http.Error(w, "Invalid request format", http.StatusBadRequest)
+		return
+	}
+
+	// Validate at least 2 videos selected
+	if len(req.HighlightIds) < 2 {
+		log.Printf("Insufficient number of videos [userID: %s, count: %d]", userID, len(req.HighlightIds))
+		http.Error(w, "Must select at least 2 videos for merge", http.StatusBadRequest)
+		return
+	}
+
+	// Validate required parameters
+	if req.Name == "" {
+		log.Printf("Video name is empty [userID: %s]", userID)
+		http.Error(w, "Video name is required", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Querying video information [userID: %s, highlightIds: %v]", userID, req.HighlightIds)
+	// 2. Validate video permissions
+	var highlights []Highlight
+	if err := DB.Where("id IN ?", req.HighlightIds).Find(&highlights).Error; err != nil {
+		log.Printf("Failed to query videos [userID: %s, error: %v]", userID, err)
+		http.Error(w, "Error querying videos", http.StatusInternalServerError)
+		return
+	}
+
+	if len(highlights) != len(req.HighlightIds) {
+		log.Printf("Some videos not found [userID: %s, requested: %d, found: %d]", userID, len(req.HighlightIds), len(highlights))
+		http.Error(w, "Some videos not found", http.StatusNotFound)
+		return
+	}
+
+	// Check user permissions
+	log.Printf("Validating user permissions [userID: %s]", userID)
+	for _, h := range highlights {
+		var count int64
+		DB.Model(&UserVideo{}).
+			Joins("JOIN videos ON user_videos.video_id = videos.id").
+			Where("user_videos.user_id = ? AND videos.id = ?", userID, h.VideoID).
+			Count(&count)
+		if count == 0 {
+			log.Printf("User has no permission [userID: %s, videoID: %s]", userID, h.VideoID)
+			http.Error(w, fmt.Sprintf("No permission to operate on video %v", h.VideoID), http.StatusForbidden)
+			return
+		}
+	}
+
+	mergedFileName := generateHashedFileName(fmt.Sprintf("%s_%s", req.Name, uuid.New().String()))
+
+	mergedVideo := MergedVideo{
+		ID:            uuid.New().String(),
+		Name:          req.Name,
+		VideoPath:     fmt.Sprintf("%s/%s/%s", SupabaseURL, SupabaseMergedHighlightsBucket, fmt.Sprintf("%s.mov", mergedFileName)),
+		ThumbnailPath: fmt.Sprintf("%s/%s/%s", SupabaseURL, SupabaseMergedThumbnailsBucket, fmt.Sprintf("%s.jpg", mergedFileName)),
+		UserID:        userID,
+		Description:   req.Description,
+		Status:        "queued",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	if err := DB.Create(&mergedVideo).Error; err != nil {
+		log.Printf("Failed to save merged video record [userID: %s, error: %v]", userID, err)
+		http.Error(w, "Unable to create merge task", http.StatusInternalServerError)
+		return
+	}
+
+	// 3. Create asynchronous task
+	log.Printf("Creating merge task [userID: %s, name: %s]", userID, req.Name)
+	payload, _ := json.Marshal(MergeTaskPayload{
+		HighlightIds:  req.HighlightIds,
+		UserID:        userID,
+		Name:          mergedFileName,
+		Description:   req.Description,
+		MergedVideoID: mergedVideo.ID,
+	})
+
+	task := asynq.NewTask("merge_highlights", payload)
+	_, err := taskClient.Enqueue(task, asynq.Queue("default"))
+	if err != nil {
+		log.Printf("Failed to create task [userID: %s, error: %v]", userID, err)
+		http.Error(w, "Failed to create merge task", http.StatusInternalServerError)
+		return
+	}
+
+	// 4. Return task information
+	resp := MergeResponse{
+		TaskID: mergedVideo.ID,
+		Status: "queued",
+	}
+
+	log.Printf("Task created successfully [userID: %s, mergedVideoID: %s]", userID, mergedVideo.ID)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(resp)
+}
+
+// Handle merge task worker
+func handleMergeTask(ctx context.Context, t *asynq.Task) error {
+	var payload MergeTaskPayload
+	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
+		log.Printf("Failed to parse task data [error: %v]", err)
+		return fmt.Errorf("Failed to parse task data: %v", err)
+	}
+
+	log.Printf("Starting merge task processing [userID: %s, highlightCount: %d]", payload.UserID, len(payload.HighlightIds))
+
+	// Update status to "processing"
+	if err := DB.Model(&MergedVideo{}).Where("id = ?", payload.MergedVideoID).Updates(map[string]interface{}{
+		"status":     "processing",
+		"updated_at": time.Now(),
+	}).Error; err != nil {
+		log.Printf("Failed to update task status [mergedVideoID: %s, error: %v]", payload.MergedVideoID, err)
+		return fmt.Errorf("Failed to update task status: %v", err)
+	}
+
+	// Get all highlight paths
+	var highlights []Highlight
+	if err := DB.Where("id IN ?", payload.HighlightIds).Find(&highlights).Error; err != nil {
+		log.Printf("Failed to query videos [userID: %s, error: %v]", payload.UserID, err)
+		updateMergedVideoStatus(payload.MergedVideoID, "failed")
+		return fmt.Errorf("Failed to query videos: %v", err)
+	}
+
+	// Prepare FFmpeg merge
+	tempFile := fmt.Sprintf("temp_%s.txt", uuid.New().String())
+	outputPath := fmt.Sprintf("uploads/%s.mov", payload.Name)
+
+	log.Printf("Preparing to merge files [userID: %s, outputPath: %s]", payload.UserID, outputPath)
+
+	// Create uploads directory
+	if _, err := os.Stat("uploads"); os.IsNotExist(err) {
+		if err := os.Mkdir("uploads", 0755); err != nil {
+			log.Printf("Failed to create directory [userID: %s, error: %v]", payload.UserID, err)
+			updateMergedVideoStatus(payload.MergedVideoID, "failed")
+			return fmt.Errorf("Failed to create uploads directory: %v", err)
+		}
+	}
+
+	// Create downloads directory
+	if _, err := os.Stat("downloads"); os.IsNotExist(err) {
+		if err := os.Mkdir("downloads", 0755); err != nil {
+			log.Printf("Failed to create directory [userID: %s, error: %v]", payload.UserID, err)
+			updateMergedVideoStatus(payload.MergedVideoID, "failed")
+			return fmt.Errorf("Failed to create downloads directory: %v", err)
+		}
+		log.Printf("Downloads directory created successfully [userID: %s]", payload.UserID)
+	}
+
+	log.Printf("Starting parallel video downloads [userID: %s, highlightCount: %d]", payload.UserID, len(highlights))
+	var localPaths []string
+	errChan := make(chan error, len(highlights))
+	pathChan := make(chan string, len(highlights))
+
+	for _, h := range highlights {
+		go func(highlight Highlight) {
+			localPath, err := downloadAndSaveFile(SupabaseVideosBucket, highlight.HighlightPath, "downloads")
+			if err != nil {
+				log.Printf("Failed to download video [userID: %s, highlightID: %s, error: %v]", payload.UserID, highlight.ID, err)
+				errChan <- err
+				return
+			}
+			log.Printf("Video downloaded successfully [userID: %s, highlightID: %s, localPath: %s]", payload.UserID, highlight.ID, localPath)
+			pathChan <- localPath
+		}(h)
+	}
+
+	for i := 0; i < len(highlights); i++ {
+		select {
+		case err := <-errChan:
+			log.Printf("Error occurred during download [userID: %s, error: %v]", payload.UserID, err)
+			updateMergedVideoStatus(payload.MergedVideoID, "failed")
+			for _, path := range localPaths {
+				os.Remove(path) // 清理已下載的檔案
+			}
+			return err
+		case path := <-pathChan:
+			localPaths = append(localPaths, path)
+		}
+	}
+	log.Printf("All videos downloaded [userID: %s, totalFiles: %d]", payload.UserID, len(localPaths))
+
+	// Write FFmpeg input file
+	f, err := os.Create(tempFile)
+	if err != nil {
+		log.Printf("Failed to create temporary file [userID: %s, mergedVideoID: %s, error: %v]", payload.UserID, payload.MergedVideoID, err)
+		updateMergedVideoStatus(payload.MergedVideoID, "failed")
+		return fmt.Errorf("Failed to create temporary file: %v", err)
+	}
+	defer os.Remove(tempFile)
+
+	for _, path := range localPaths {
+		f.WriteString(fmt.Sprintf("file '%s'\n", path))
+		defer os.Remove(path)
+	}
+	f.Close()
+
+	// Use FFmpeg to merge videos
+	log.Printf("Starting FFmpeg merge [userID: %s]", payload.UserID)
+	cmd := exec.Command(
+		"ffmpeg",
+		"-f", "concat",
+		"-safe", "0",
+		"-i", tempFile,
+		"-c", "copy",
+		"-y",
+		outputPath,
+	)
+
+	if err := cmd.Run(); err != nil {
+		log.Printf("FFmpeg merge failed [userID: %s, error: %v]", payload.UserID, err)
+		return fmt.Errorf("Failed to merge videos: %v", err)
+	}
+
+	// Generate thumbnail
+	log.Printf("Generating thumbnail [userID: %s]", payload.UserID)
+	thumbnailPath := fmt.Sprintf("uploads/%s.jpg", payload.Name)
+	cmd = exec.Command(
+		"ffmpeg",
+		"-i", outputPath,
+		"-ss", "00:00:02",
+		"-vframes", "1",
+		"-q:v", "2",
+		thumbnailPath,
+	)
+	if err := cmd.Run(); err != nil {
+		log.Printf("Failed to generate thumbnail [userID: %s, error: %v]", payload.UserID, err)
+		updateMergedVideoStatus(payload.MergedVideoID, "failed")
+		os.Remove(outputPath)
+		return fmt.Errorf("Failed to generate thumbnail: %v", err)
+	}
+
+	// Upload to Supabase
+	log.Printf("Starting Supabase upload [userID: %s]", payload.UserID)
+	if err := uploadToSupabase(SupabaseMergedHighlightsBucket, outputPath, fmt.Sprintf("%s.mov", payload.Name), "video/quicktime"); err != nil {
+		log.Printf("Failed to upload merged video [userID: %s, error: %v]", payload.UserID, err)
+		updateMergedVideoStatus(payload.MergedVideoID, "failed")
+		os.Remove(outputPath)
+		os.Remove(thumbnailPath)
+		return err
+	}
+	if err := uploadToSupabase(SupabaseMergedThumbnailsBucket, thumbnailPath, fmt.Sprintf("%s.jpg", payload.Name), "image/jpeg"); err != nil {
+		log.Printf("Failed to upload thumbnail [userID: %s, error: %v]", payload.UserID, err)
+		updateMergedVideoStatus(payload.MergedVideoID, "failed")
+		os.Remove(outputPath)
+		os.Remove(thumbnailPath)
+		return err
+	}
+
+	// Update MergedVideo record
+	log.Printf("Updating database record [userID: %s, mergedVideoID: %s]", payload.UserID, payload.MergedVideoID)
+	if err := DB.Model(&MergedVideo{}).Where("id = ?", payload.MergedVideoID).Updates(map[string]interface{}{
+		"status":     "completed",
+		"updated_at": time.Now(),
+	}).Error; err != nil {
+		log.Printf("Failed to update merged video record [userID: %s, mergedVideoID: %s, error: %v]", payload.UserID, payload.MergedVideoID, err)
+		updateMergedVideoStatus(payload.MergedVideoID, "failed")
+		return fmt.Errorf("Failed to update merged video record: %v", err)
+	}
+
+	// Record association with original highlights
+	for _, highlightID := range payload.HighlightIds {
+		relation := MergedVideoHighlight{
+			MergedVideoID: payload.MergedVideoID,
+			HighlightID:   highlightID,
+			CreatedAt:     time.Now(),
+		}
+		if err := DB.Create(&relation).Error; err != nil {
+			log.Printf("Failed to record association [userID: %s, mergedVideoID: %s, error: %v]", payload.UserID, payload.MergedVideoID, err)
+			updateMergedVideoStatus(payload.MergedVideoID, "failed")
+			return fmt.Errorf("Failed to record association: %v", err)
+		}
+	}
+
+	// Clean up temporary files
+	os.Remove(outputPath)
+	os.Remove(thumbnailPath)
+
+	log.Printf("Merge task completed [userID: %s, mergedVideoID: %s]", payload.UserID, payload.MergedVideoID)
+	return nil
+}
+
+// Update MergedVideo status
+func updateMergedVideoStatus(mergedVideoID, status string) {
+	if err := DB.Model(&MergedVideo{}).Where("id = ?", mergedVideoID).Updates(map[string]interface{}{
+		"status":     status,
+		"updated_at": time.Now(),
+	}).Error; err != nil {
+		log.Printf("Failed to update status [mergedVideoID: %s, error: %v]", mergedVideoID, err)
+	}
+}
+
+// Download and save file from Supabase
+func downloadAndSaveFile(bucket, filePath, localDir string) (string, error) {
+	log.Printf("Starting file download [bucket: %s, filePath: %s]", bucket, filePath)
+
+	// Initialize Supabase client
+	supabase, err := supabase.NewClient(SupabaseURL, SupabaseAPIKey, &supabase.ClientOptions{})
+	if err != nil {
+		log.Printf("Supabase client initialization failed [bucket: %s, filePath: %s, error: %v]", bucket, filePath, err)
+		return "", fmt.Errorf("Failed to initialize Supabase client: %v", err)
+	}
+
+	log.Printf("Creating signed URL [bucket: %s, filePath: %s]", bucket, filePath)
+	signedURLResp, err := supabase.Storage.CreateSignedUrl(bucket, filepath.Base(filePath), 60)
+	if err != nil {
+		log.Printf("Failed to create signed URL [bucket: %s, filePath: %s, error: %v]", bucket, filePath, err)
+		return "", fmt.Errorf("Failed to create signed URL: %v", err)
+	}
+
+	log.Printf("Starting file content download [bucket: %s, filePath: %s]", bucket, filePath)
+	resp, err := http.Get(signedURLResp.SignedURL)
+	if err != nil {
+		log.Printf("HTTP request failed [bucket: %s, filePath: %s, error: %v]", bucket, filePath, err)
+		return "", fmt.Errorf("Failed to download file: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("HTTP response error [bucket: %s, filePath: %s, statusCode: %d]", bucket, filePath, resp.StatusCode)
+		return "", fmt.Errorf("Failed to download file: HTTP %d", resp.StatusCode)
+	}
+
+	localPath := filepath.Join(localDir, filepath.Base(filePath))
+	log.Printf("Preparing to create local file [bucket: %s, filePath: %s, localPath: %s]", bucket, filePath, localPath)
+
+	file, err := os.Create(localPath)
+	if err != nil {
+		log.Printf("Failed to create local file [bucket: %s, filePath: %s, localPath: %s, error: %v]", bucket, filePath, localPath, err)
+		return "", fmt.Errorf("Failed to create local file: %v", err)
+	}
+	defer file.Close()
+
+	written, err := io.Copy(file, resp.Body)
+	if err != nil {
+		log.Printf("Failed to write file [bucket: %s, filePath: %s, localPath: %s, error: %v]", bucket, filePath, localPath, err)
+		return "", fmt.Errorf("Failed to write file: %v", err)
+	}
+
+	log.Printf("File download completed [bucket: %s, filePath: %s, localPath: %s, size: %d bytes]", bucket, filePath, localPath, written)
+	return localPath, nil
+}
+
 func main() {
 	router := mux.NewRouter()
 
@@ -812,18 +1240,25 @@ func main() {
 	protectedRoutes := router.PathPrefix("/").Subrouter()
 	protectedRoutes.Use(jwtMiddleware)
 
-	// 現有路由
+	// Existing routes
 	protectedRoutes.HandleFunc("/api/user", getCurrentUserHandler).Methods("GET", "OPTIONS")
 	protectedRoutes.HandleFunc("/upload", uploadFileHandler).Methods("POST", "OPTIONS")
 	protectedRoutes.HandleFunc("/thumbnails", listThumbnailsHandler).Methods("GET", "OPTIONS")
 	protectedRoutes.HandleFunc("/video/{videoID}", deleteFileHandler).Methods("DELETE", "OPTIONS")
-
-	// 新增的路由
 	protectedRoutes.HandleFunc("/video/{videoID}/highlights", getVideoHighlightsHandler).Methods("GET", "OPTIONS")
+	protectedRoutes.HandleFunc("/api/highlights/merge", mergeHighlightsHandler).Methods("POST", "OPTIONS")
 
 	router.HandleFunc("/asset/logo", logoHandler).Methods("GET")
 	router.HandleFunc("/auth/google/login", loginHandler).Methods("GET")
 	router.HandleFunc("/auth/google/callback", callbackHandler).Methods("GET")
+
+	mux := asynq.NewServeMux()
+	mux.HandleFunc("merge_highlights", handleMergeTask)
+	go func() {
+		if err := taskServer.Run(mux); err != nil {
+			log.Fatalf("Failed to start task processor: %v", err)
+		}
+	}()
 
 	fmt.Printf("Server running at http://0.0.0.0:%s\n", Port)
 	log.Fatal(http.ListenAndServe("0.0.0.0:"+Port, router))
