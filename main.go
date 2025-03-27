@@ -191,11 +191,11 @@ func init() {
 // Initialize Redis and Asynq
 func initTaskSystem() {
 	taskClient = asynq.NewClient(asynq.RedisClientOpt{
-		Addr: "localhost:6379",
+		Addr: os.Getenv("REDIS_HOST"),
 	})
 
 	taskServer = asynq.NewServer(
-		asynq.RedisClientOpt{Addr: "localhost:6379"},
+		asynq.RedisClientOpt{Addr: os.Getenv("REDIS_HOST")},
 		asynq.Config{
 			Concurrency: 10,
 			Queues: map[string]int{
