@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1231,6 +1232,108 @@ func downloadAndSaveFile(bucket, filePath, localDir string) (string, error) {
 	return localPath, nil
 }
 
+type MergedVideoResponse struct {
+	ID            string  `json:"id"`
+	Name          string  `json:"name"`
+	VideoPath     string  `json:"video_path"`
+	ThumbnailPath string  `json:"thumbnail_path"`
+	Description   *string `json:"description"`
+	Status        string  `json:"status"`
+	CreatedAt     string  `json:"created_at"`
+	UpdatedAt     string  `json:"updated_at"`
+}
+
+type PaginatedMergedVideosResponse struct {
+	MergedVideos []MergedVideoResponse `json:"merged_videos"`
+	TotalCount   int64                 `json:"total_count"` // 總記錄數
+	Page         int                   `json:"page"`        // 當前頁碼
+	Limit        int                   `json:"limit"`       // 每頁數量
+}
+
+func listUserMergedVideosHandler(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value("userID").(string)
+	if userID == "" {
+		log.Printf("Unauthorized request [userID empty]")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Get pagination parameters
+	pageStr := r.URL.Query().Get("page")
+	limitStr := r.URL.Query().Get("limit")
+
+	// Set default values
+	page := 1
+	limit := 10
+	if pageStr != "" {
+		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
+			page = p
+		}
+	}
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 100 { // 限制最大 limit 為 100
+			limit = l
+		}
+	}
+
+	// Calculate offset
+	offset := (page - 1) * limit
+
+	// Query total count
+	var totalCount int64
+	if err := DB.Model(&MergedVideo{}).Where("user_id = ?", userID).Count(&totalCount).Error; err != nil {
+		log.Printf("Failed to count merged videos [userID: %s, error: %v]", userID, err)
+		http.Error(w, "Error counting merged videos", http.StatusInternalServerError)
+		return
+	}
+
+	// Query user's merged videos (pagination)
+	var mergedVideos []MergedVideo
+	if err := DB.Where("user_id = ?", userID).
+		Offset(offset).
+		Limit(limit).
+		Order("created_at DESC"). // Optional: Sort by creation time in descending order
+		Find(&mergedVideos).Error; err != nil {
+		log.Printf("Failed to query merged videos [userID: %s, error: %v]", userID, err)
+		http.Error(w, "Error querying merged videos", http.StatusInternalServerError)
+		return
+	}
+
+	// Format response
+	var response []MergedVideoResponse
+	for _, mv := range mergedVideos {
+		response = append(response, MergedVideoResponse{
+			ID:            mv.ID,
+			Name:          mv.Name,
+			VideoPath:     mv.VideoPath,
+			ThumbnailPath: mv.ThumbnailPath,
+			Description:   mv.Description,
+			Status:        mv.Status,
+			CreatedAt:     mv.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:     mv.UpdatedAt.Format(time.RFC3339),
+		})
+	}
+
+	// Build paginated response
+	paginatedResponse := PaginatedMergedVideosResponse{
+		MergedVideos: response,
+		TotalCount:   totalCount,
+		Page:         page,
+		Limit:        limit,
+	}
+
+	// Return JSON response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(paginatedResponse); err != nil {
+		log.Printf("Failed to encode response [userID: %s, error: %v]", userID, err)
+		http.Error(w, "Error encoding response", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Successfully retrieved merged videos [userID: %s, page: %d, limit: %d, total: %d]", userID, page, limit, totalCount)
+}
+
 func main() {
 	router := mux.NewRouter()
 
@@ -1247,6 +1350,7 @@ func main() {
 	protectedRoutes.HandleFunc("/video/{videoID}", deleteFileHandler).Methods("DELETE", "OPTIONS")
 	protectedRoutes.HandleFunc("/video/{videoID}/highlights", getVideoHighlightsHandler).Methods("GET", "OPTIONS")
 	protectedRoutes.HandleFunc("/api/highlights/merge", mergeHighlightsHandler).Methods("POST", "OPTIONS")
+	protectedRoutes.HandleFunc("/user/merged-videos", listUserMergedVideosHandler).Methods("GET", "OPTIONS")
 
 	router.HandleFunc("/asset/logo", logoHandler).Methods("GET")
 	router.HandleFunc("/auth/google/login", loginHandler).Methods("GET")
